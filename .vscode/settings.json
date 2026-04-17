@@ -1,0 +1,8 @@
+{
+    "julia.executablePath": "julia +1.12",
+    "julia.debuggerDefaultCompiled": [
+
+        "ALL_MODULES_EXCEPT_MAIN",
+        	"-HydroGNN.",
+    ]
+}
