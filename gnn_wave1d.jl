@@ -38,37 +38,6 @@ dhidden = 32
 dout = 2
 nhidden = 5
 
-struct GNN
-    enc
-    proc
-    dec
-end
-
-Flux.@layer GNN
-
-function GNN(din::Int, dhidden::Int, dout::Int, nlayers::Int)
-    return GNN(
-        Dense(din=>dhidden, swish),
-        GNNChain([GraphConv(dhidden=>dhidden, swish) for _ in 1:nlayers]...),
-        Dense(dhidden=>dout)
-    )
-    # return GNN(
-    #     GraphConv(din=>dhidden, swish),
-    #     GraphConv(dhidden=>dhidden, swish),
-    #     GraphConv(dhidden=>dout)
-    # )
-end
-
-function (m::GNN)(g::GNNGraph, x_dym, x_static)
-    x = cat(x_dym, x_static; dims=1)
-    # x1 = m.enc(g, x)
-    x1 = m.enc(x)
-    x1 = m.proc(g, x1)
-    # x1 = m.dec(g, x1)
-    x1 = m.dec(x1)
-    return x1 .+ x_dym
-end
-
 model = GNN(din, dhidden, dout, nhidden)
 
 # AddParallel(l) = Parallel(+, identity, l)
