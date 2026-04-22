@@ -62,6 +62,4 @@ plot_loss(train_loss, loss_noiseless, valid_loss, joinpath(model_dir, "loss_plot
 
 # %%
 
-# movie_graphs(x_out, "predictions.mp4")
-graph_gt, graph_pred = predict_trajectory(settings.valid_data_path, 1, model |> cpu)
-movie_graphs_comp(graph_gt, graph_pred, joinpath(model_dir, "pred_vs_gt.mp4"))
+evaluate_all_trajectories(settings.valid_data_path, model |> cpu, model_dir)

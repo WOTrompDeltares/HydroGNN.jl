@@ -13,5 +13,5 @@ include("plot.jl")
 export plot_loss, movie_graphs, movie_graphs_comp
 
 include("eval.jl")
-export predict_trajectory
+export predict_trajectory, evaluate_all_trajectories
 end

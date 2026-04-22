@@ -1,4 +1,5 @@
 using GraphNeuralNetworks
+using JLD2
 
 function predict_trajectory(fn, traj_ind::Int, model)
 
@@ -32,4 +33,36 @@ function predict_trajectory(fn, traj_ind::Int, model)
 
     return gt, pred
 
+end
+
+function evaluate_all_trajectories(data_file::String, model, output_dir::String)
+    # Create output directory if it doesn't exist
+    if !isdir(output_dir)
+        mkpath(output_dir)
+    end
+
+    # Get all trajectory keys from the data file
+    trajectory_keys = []
+    jldopen(data_file, "r") do f
+        trajectory_keys = sort(collect(keys(f)))
+    end
+
+    # Process each trajectory
+    for (idx, key) in enumerate(trajectory_keys)
+        if startswith(key, "trajectory_")
+            # Extract trajectory number from key
+            traj_num = parse(Int, split(key, "_")[2])
+            println("\nEvaluating trajectory $idx: $key (traj_num=$traj_num)")
+
+            # Predict trajectory
+            gt, pred = predict_trajectory(data_file, traj_num, model)
+
+            # Generate and save comparison movie
+            output_file = joinpath(output_dir, "trajectory_$(traj_num)_comparison.mp4")
+            println("Saving movie to: $output_file")
+            movie_graphs_comp(gt, pred, output_file)
+        end
+    end
+
+    println("\nEvaluation complete. All movies saved to: $output_dir")
 end
