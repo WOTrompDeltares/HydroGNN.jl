@@ -101,9 +101,9 @@ dl_valid = dl_valid |> device
 lr = 3e-3
 lr_final = 1e-5
 lr_step = 10
-lr_decay = (lr_final/lr)^(lr_step÷nepochs)
+lr_decay = (lr_final/lr)^(lr_step/nepochs)
 
-opt = Flux.setup(Adam(3e-3), model)
+opt = Flux.setup(Adam(lr), model)
 
 pr = Progress(nepochs, desc="Training Progress", showspeed=true)
 
@@ -114,6 +114,7 @@ valid_loss = zeros(nepochs)
 loss_noiseless = zeros(nepochs)
 
 for epoch in 1:nepochs
+    Flux.adjust!(opt, eta=schedule(epoch))
     loss = 0.0f0
     val_loss = 0.0f0
     noiseless_loss = 0.0f0
