@@ -1,0 +1,57 @@
+using Flux
+using ProgressMeter
+using ParameterSchedulers
+
+function train_model!(model, dl_train, dl_valid, device;
+    nepochs=250,
+    noise=2.5e-2,
+    lr=3e-3,
+    lr_final=1e-5,
+    lr_step=10)
+
+    lr_decay = (lr_final/lr)^(lr_step/nepochs)
+    opt = Flux.setup(Adam(lr), model)
+    schedule = Step(start=lr, decay=lr_decay, step_sizes=lr_step)
+    pr = Progress(nepochs, desc="Training Progress", showspeed=true)
+
+    train_loss = zeros(nepochs)
+    valid_loss = zeros(nepochs)
+    loss_noiseless = zeros(nepochs)
+
+    for epoch in 1:nepochs
+        Flux.adjust!(opt, eta=schedule(epoch))
+        loss = 0.0f0
+        val_loss = 0.0f0
+        noiseless_loss = 0.0f0
+
+        for (x, y) in dl_train
+            yhat_noiseless = model(x, x.ndata.dynamic, x.ndata.static)
+            noiseless_loss += Flux.mse(yhat_noiseless, y.x)
+
+            x.ndata.dynamic .+= (noise * randn(size(x.ndata.dynamic))) |> device
+            batch_loss, grad = Flux.withgradient(model) do m
+                yhat = m(x, x.ndata.dynamic, x.ndata.static)
+                Flux.mse(yhat, y.x)
+            end
+            Flux.Optimise.update!(opt, model, grad[1])
+            loss += batch_loss
+        end
+
+        for (x, y) in dl_valid
+            yhat = model(x, x.ndata.dynamic, x.ndata.static)
+            val_loss += Flux.mse(yhat, y.x)
+        end
+
+        loss /= length(dl_train)
+        val_loss /= length(dl_valid)
+        noiseless_loss /= length(dl_train)
+        next!(pr;
+            showvalues=[(:epoch, epoch), (:train_loss, loss), (:val_loss, val_loss), (:loss_noiseless, noiseless_loss)]
+        )
+        train_loss[epoch] = loss
+        valid_loss[epoch] = val_loss
+        loss_noiseless[epoch] = noiseless_loss
+    end
+
+    return train_loss, loss_noiseless, valid_loss
+end

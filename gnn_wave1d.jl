@@ -8,9 +8,6 @@ using Statistics
 using CUDA, cuDNN
 using Flux
 using Flux: onehotbatch, DataLoader, relu, swish
-using ParameterSchedulers
-
-using ProgressMeter
 using HydroGNN
 
 if CUDA.has_cuda() && CUDA.functional()
@@ -40,15 +37,6 @@ nhidden = 5
 
 model = GNN(din, dhidden, dout, nhidden)
 
-# AddParallel(l) = Parallel(+, identity, l)
-
-# model = AddParallel(
-#     GNNChain(
-#         GraphConv(din_in=>dhidden),
-#         GraphConv(dhidden=>dhidden),
-#         GraphConv(dhidden=>dout))
-# )
-
 model(first(dl_train)[1], first(dl_train)[1].ndata.dynamic, first(dl_train)[1].ndata.static)
 
 # %%
@@ -67,55 +55,8 @@ model = model |> device
 dl_train = dl_train |> device
 dl_valid = dl_valid |> device
 
-lr = 3e-3
-lr_final = 1e-5
-lr_step = 10
-lr_decay = (lr_final/lr)^(lr_step/nepochs)
-
-opt = Flux.setup(Adam(lr), model)
-
-pr = Progress(nepochs, desc="Training Progress", showspeed=true)
-
-schedule = Step(start = lr, decay = lr_decay, step_sizes = lr_step)
-
-train_loss = zeros(nepochs)
-valid_loss = zeros(nepochs)
-loss_noiseless = zeros(nepochs)
-
-for epoch in 1:nepochs
-    Flux.adjust!(opt, eta=schedule(epoch))
-    loss = 0.0f0
-    val_loss = 0.0f0
-    noiseless_loss = 0.0f0
-    for (x,y) in dl_train
-        yhat_noiseless = model(x, x.ndata.dynamic, x.ndata.static)
-        noiseless_loss += Flux.mse(yhat_noiseless, y.x)
-
-        x.ndata.dynamic .+= (noise * randn(size(x.ndata.dynamic)))|> device
-        # x.x[1:2,:] .+= (noise * randn(size(x.x[1:2,:])))|> device
-        batch_loss, grad = Flux.withgradient(model) do m
-            yhat = m(x, x.ndata.dynamic, x.ndata.static)
-            Flux.mse(yhat, y.x)
-        end
-        Flux.Optimise.update!(opt, model, grad[1])
-        loss += batch_loss
-    end
-
-    for (x,y) in dl_valid
-        yhat = model(x, x.ndata.dynamic, x.ndata.static)
-        val_loss += Flux.mse(yhat, y.x)
-    end
-
-    loss /= length(dl_train)
-    val_loss /= length(dl_valid)
-    noiseless_loss /= length(dl_train)
-    next!(pr;
-        showvalues = [(:epoch, epoch), (:train_loss, loss), (:val_loss, val_loss), (:loss_noiseless, noiseless_loss)]
-    )
-    train_loss[epoch] = loss
-    valid_loss[epoch] = val_loss
-    loss_noiseless[epoch] = noiseless_loss
-end
+train_loss, loss_noiseless, valid_loss = train_model!(model, dl_train, dl_valid, device;
+    nepochs=nepochs, noise=noise, lr=3e-3, lr_final=1e-5, lr_step=10)
 
 # %%
 
