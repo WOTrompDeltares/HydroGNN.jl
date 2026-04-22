@@ -20,8 +20,10 @@ end
 
 # %%
 
-train_x, train_y = load_data("data/wave1d/train.jld2")
-val_x, val_y = load_data("data/wave1d/valid.jld2")
+settings = TrainSettings()
+
+train_x, train_y = load_data(settings.train_data_path)
+val_x, val_y = load_data(settings.valid_data_path)
 
 # %%
 
@@ -30,41 +32,36 @@ nbatch = 32
 dl_train = DataLoader((train_x, train_y), batchsize=nbatch, shuffle=true, collate=true)
 dl_valid = DataLoader((val_x, val_y), batchsize=nbatch, shuffle=false, collate=true)
 
-din = 10
-dhidden = 32
-dout = 2
-nhidden = 5
+din = size(train_x[1].ndata.dynamic, 1) + size(train_x[1].ndata.static, 1)
+dout = size(train_y[1].ndata.x, 1)
 
-model = GNN(din, dhidden, dout, nhidden)
+model = GNN(din, settings.dhidden, dout, settings.nhidden)
 
 model(first(dl_train)[1], first(dl_train)[1].ndata.dynamic, first(dl_train)[1].ndata.static)
 
 # %%
 
-name = "test_run3d"
+name = settings.model_name
+model_dir = joinpath(settings.save_dir, name)
 
-if !isdir(joinpath("models", name))
-    mkpath(joinpath("models", name))
+if !isdir(model_dir)
+    mkpath(model_dir)
 end
 
-
-nepochs = 250
-noise = 2.5e-2
 
 model = model |> device
 dl_train = dl_train |> device
 dl_valid = dl_valid |> device
 
-train_loss, loss_noiseless, valid_loss = train_model!(model, dl_train, dl_valid, device;
-    nepochs=nepochs, noise=noise, lr=3e-3, lr_final=1e-5, lr_step=10)
+train_loss, loss_noiseless, valid_loss = train_model!(model, dl_train, dl_valid, device, settings)
 
 # %%
 
-plot_loss(train_loss, loss_noiseless, valid_loss, "models/$(name)/loss_plot.png")
+plot_loss(train_loss, loss_noiseless, valid_loss, joinpath(model_dir, "loss_plot.png"))
 
 
 # %%
 
 # movie_graphs(x_out, "predictions.mp4")
-graph_gt, graph_pred = predict_trajectory("data/wave1d/valid.jld2", 1, model|> cpu)
-movie_graphs_comp(graph_gt, graph_pred, "models/$(name)/pred_vs_gt.mp4")
+graph_gt, graph_pred = predict_trajectory(settings.valid_data_path, 1, model |> cpu)
+movie_graphs_comp(graph_gt, graph_pred, joinpath(model_dir, "pred_vs_gt.mp4"))

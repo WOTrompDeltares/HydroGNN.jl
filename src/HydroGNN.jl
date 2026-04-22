@@ -7,7 +7,7 @@ include("gnn.jl")
 export GNN
 
 include("training.jl")
-export train_model!
+export TrainSettings, train_model!
 
 include("plot.jl")
 export plot_loss, movie_graphs, movie_graphs_comp

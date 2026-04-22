@@ -2,14 +2,28 @@ using Flux
 using ProgressMeter
 using ParameterSchedulers
 
-function train_model!(model, dl_train, dl_valid, device;
-    nepochs=250,
-    noise=2.5e-2,
-    lr=3e-3,
-    lr_final=1e-5,
-    lr_step=10)
+Base.@kwdef struct TrainSettings
+    dhidden::Int = 32
+    nhidden::Int = 5
+    nepochs::Int = 250
+    noise::Float64 = 2.5e-2
+    lr::Float64 = 3e-3
+    lr_final::Float64 = 1e-5
+    lr_step::Int = 10
+    train_data_path::String = "data/wave1d/train.jld2"
+    valid_data_path::String = "data/wave1d/valid.jld2"
+    model_name::String = "test_run3d"
+    save_dir::String = "models"
+end
 
-    lr_decay = (lr_final/lr)^(lr_step/nepochs)
+function train_model!(model, dl_train, dl_valid, device, settings::TrainSettings)
+    nepochs = settings.nepochs
+    noise = settings.noise
+    lr = settings.lr
+    lr_final = settings.lr_final
+    lr_step = settings.lr_step
+
+    lr_decay = (lr_final / lr)^(lr_step / nepochs)
     opt = Flux.setup(Adam(lr), model)
     schedule = Step(start=lr, decay=lr_decay, step_sizes=lr_step)
     pr = Progress(nepochs, desc="Training Progress", showspeed=true)
