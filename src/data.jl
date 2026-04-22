@@ -4,6 +4,23 @@ using JLD2
 
 using Flux: onehotbatch
 
+function read_trajectory(fn, traj_num::Int)
+    jldopen(fn, "r") do f
+        traj_group = f["trajectory_$(traj_num)"]
+
+        velocity = traj_group["velocity_node"]
+        waterlevel = traj_group["waterlevel"]
+        mesh_pos = traj_group["mesh_pos"][1,:]
+        node_type = traj_group["node_type"]
+        bathymetry = traj_group["bathymetry"]
+
+        edges = traj_group["edges"]
+        edges = cat(edges, reverse(edges, dims=1), dims=2)
+
+        return velocity, waterlevel, mesh_pos, node_type, bathymetry, edges
+    end
+end
+
 
 function load_data(fn)
     data_x = []

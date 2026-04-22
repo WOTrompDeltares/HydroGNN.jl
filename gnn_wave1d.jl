@@ -34,9 +34,9 @@ dl_train = DataLoader((train_x, train_y), batchsize=nbatch, shuffle=true, collat
 dl_valid = DataLoader((val_x, val_y), batchsize=nbatch, shuffle=false, collate=true)
 
 din = 10
-dhidden = 16
+dhidden = 32
 dout = 2
-nhidden = 7
+nhidden = 5
 
 struct GNN
     enc
@@ -84,15 +84,22 @@ model(first(dl_train)[1], first(dl_train)[1].ndata.dynamic, first(dl_train)[1].n
 
 # %%
 
+name = "test_run3d"
+
+if !isdir(joinpath("models", name))
+    mkpath(joinpath("models", name))
+end
+
+
 nepochs = 250
-noise = 3e-2
+noise = 2.5e-2
 
 model = model |> device
 dl_train = dl_train |> device
 dl_valid = dl_valid |> device
 
 lr = 3e-3
-lr_final = 1e-4
+lr_final = 1e-5
 lr_step = 10
 lr_decay = (lr_final/lr)^(lr_step÷nepochs)
 
@@ -142,27 +149,11 @@ end
 
 # %%
 
-plot_loss(train_loss, loss_noiseless, valid_loss)
+plot_loss(train_loss, loss_noiseless, valid_loss, "models/$(name)/loss_plot.png")
+
 
 # %%
 
-x0 = val_x[1]
-times = 1:360
-
-x_out = []
-push!(x_out, x0)
-
-model = model |> cpu
-
-for time in times
-    println("Predicting time step: $time")
-    out = model(x_out[end], x_out[end].ndata.dynamic, x_out[end].ndata.static)
-
-    x_next = GNNGraph(x_out[end], ndata=(; dynamic=out, static=x0.ndata.static))
-
-    push!(x_out, x_next)
-end
-
-# %%
-
-movie_graphs(x_out, "predictions.mp4")
+# movie_graphs(x_out, "predictions.mp4")
+graph_gt, graph_pred = predict_trajectory("data/wave1d/valid.jld2", 1, model|> cpu)
+movie_graphs_comp(graph_gt, graph_pred, "models/$(name)/pred_vs_gt.mp4")
