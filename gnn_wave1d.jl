@@ -22,15 +22,15 @@ end
 
 settings = TrainSettings()
 
+settings.model_name = "test_run4"
+
 train_x, train_y = load_data(settings.train_data_path)
 val_x, val_y = load_data(settings.valid_data_path)
 
 # %%
 
-nbatch = 32
-
-dl_train = DataLoader((train_x, train_y), batchsize=nbatch, shuffle=true, collate=true)
-dl_valid = DataLoader((val_x, val_y), batchsize=nbatch, shuffle=false, collate=true)
+dl_train = DataLoader((train_x, train_y), batchsize=settings.nbatch, shuffle=true, collate=true)
+dl_valid = DataLoader((val_x, val_y), batchsize=settings.nbatch, shuffle=false, collate=true)
 
 din = size(train_x[1].ndata.dynamic, 1) + size(train_x[1].ndata.static, 1)
 dout = size(train_y[1].ndata.x, 1)

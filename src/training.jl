@@ -1,8 +1,10 @@
 using Flux
+using JLD2
 using ProgressMeter
 using ParameterSchedulers
+using TOML
 
-Base.@kwdef struct TrainSettings
+Base.@kwdef mutable struct TrainSettings
     dhidden::Int = 32
     nhidden::Int = 5
     nepochs::Int = 250
@@ -10,6 +12,7 @@ Base.@kwdef struct TrainSettings
     lr::Float64 = 3e-3
     lr_final::Float64 = 1e-5
     lr_step::Int = 10
+    nbatch::Int = 32
     train_data_path::String = "data/wave1d/train.jld2"
     valid_data_path::String = "data/wave1d/valid.jld2"
     model_name::String = "test_run3d"
@@ -65,6 +68,15 @@ function train_model!(model, dl_train, dl_valid, device, settings::TrainSettings
         train_loss[epoch] = loss
         valid_loss[epoch] = val_loss
         loss_noiseless[epoch] = noiseless_loss
+    end
+
+    model_dir = joinpath(settings.save_dir, settings.model_name)
+    mkpath(model_dir)
+
+    jldsave(joinpath(model_dir, "model.jld2"); model=model |> cpu)
+
+    open(joinpath(model_dir, "settings.toml"), "w") do io
+        TOML.print(io, Dict(string(f) => getfield(settings, f) for f in fieldnames(TrainSettings)))
     end
 
     return train_loss, loss_noiseless, valid_loss
