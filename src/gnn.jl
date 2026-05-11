@@ -2,6 +2,14 @@ using GraphNeuralNetworks
 using Flux
 using Flux: swish
 
+struct ResGraphConv <: GNNLayer
+    layer
+end
+
+Flux.@layer ResGraphConv
+
+(m::ResGraphConv)(g::GNNGraph, x) = m.layer(g, x) .+ x
+
 struct GNN
     enc
     proc
@@ -10,10 +18,11 @@ end
 
 Flux.@layer GNN
 
-function GNN(din::Int, dhidden::Int, dout::Int, nlayers::Int)
+function GNN(din::Int, dhidden::Int, dout::Int, nlayers::Int; skip::Bool=false)
     return GNN(
         Dense(din=>dhidden, swish),
-        GNNChain([GraphConv(dhidden=>dhidden, swish) for _ in 1:nlayers]...),
+        GNNChain([skip ? ResGraphConv(SAGEConv(dhidden=>dhidden, swish)) :
+                         SAGEConv(dhidden=>dhidden, swish) for _ in 1:nlayers]...),
         Dense(dhidden=>dout)
     )
 end

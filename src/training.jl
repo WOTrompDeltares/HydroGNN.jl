@@ -13,6 +13,7 @@ Base.@kwdef mutable struct TrainSettings
     lr_final::Float64 = 1e-5
     lr_step::Int = 10
     nbatch::Int = 32
+    skip_connections::Bool = false
     train_data_path::String = "data/wave1d/train.jld2"
     valid_data_path::String = "data/wave1d/valid.jld2"
     model_name::String = "test_run3d"

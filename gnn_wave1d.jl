@@ -22,7 +22,10 @@ end
 
 settings = TrainSettings()
 
-settings.model_name = "test_run4"
+settings.model_name = "test_run7"
+settings.skip_connections = true
+settings.noise = 1e-2
+settings.nepochs = 200
 
 train_x, train_y = load_data(settings.train_data_path)
 val_x, val_y = load_data(settings.valid_data_path)
@@ -35,7 +38,7 @@ dl_valid = DataLoader((val_x, val_y), batchsize=settings.nbatch, shuffle=false, 
 din = size(train_x[1].ndata.dynamic, 1) + size(train_x[1].ndata.static, 1)
 dout = size(train_y[1].ndata.x, 1)
 
-model = GNN(din, settings.dhidden, dout, settings.nhidden)
+model = GNN(din, settings.dhidden, dout, settings.nhidden; skip=settings.skip_connections)
 
 model(first(dl_train)[1], first(dl_train)[1].ndata.dynamic, first(dl_train)[1].ndata.static)
 
