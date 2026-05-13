@@ -1,7 +1,7 @@
 module HydroGNN
 
 include("data.jl")
-export load_data, DynamicNormStats, compute_norm_stats,
+export load_data, load_data_multistep, DynamicNormStats, compute_norm_stats,
        NormStrategy, GlobalNorm, PerTrajectoryNorm
 
 include("gnn.jl")
@@ -9,7 +9,7 @@ export GNN
 
 include("training.jl")
 export TrainSettings, train_model!,
-       TrainStrategy, SingleStepNoise, NoNoise
+       TrainStrategy, SingleStepNoise, NoNoise, MultiStepRollout
 
 include("plot.jl")
 export plot_loss, movie_graphs, movie_graphs_comp

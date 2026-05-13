@@ -142,3 +142,58 @@ function load_data(fn, norm_strategy::NormStrategy)
     end
     return data_x, data_y
 end
+
+function load_data_multistep(fn, norm_strategy::NormStrategy, nsteps::Int)
+    data_x = []
+
+    jldopen(fn, "r") do f
+        for key in sort(keys(f))
+            println("Loading trajectory: $key")
+
+            traj_group = f[key]
+
+            velocity   = traj_group["velocity_node"]
+            waterlevel = traj_group["waterlevel"]
+            mesh_pos   = traj_group["mesh_pos"][1,:]
+            node_type  = traj_group["node_type"]
+            bathymetry = traj_group["bathymetry"]
+            has_tau    = "tau" in keys(traj_group)
+            if has_tau
+                tau = traj_group["tau"]
+            end
+
+            edges = traj_group["edges"]
+            edges = cat(edges, reverse(edges, dims=1), dims=2)
+
+            bathymetry .= (bathymetry .- mean(bathymetry)) ./ std(bathymetry)
+            mesh_pos   .= (mesh_pos .- minimum(mesh_pos)) ./ (maximum(mesh_pos) - minimum(mesh_pos))
+            node_onehot = onehotbatch(node_type, collect(0:5))
+            data_static = hcat(bathymetry, mesh_pos, node_onehot')'
+
+            traj_stats = resolve_stats(norm_strategy, velocity, waterlevel, has_tau ? tau : nothing)
+
+            mu_wl, mu_v = traj_stats.mu[1], traj_stats.mu[2]
+            s_wl,  s_v  = traj_stats.sigma[1], traj_stats.sigma[2]
+            if has_tau
+                mu_t, s_t = traj_stats.mu[3], traj_stats.sigma[3]
+            end
+
+            nT = size(velocity, 2)
+            for ii in 1:(nT - nsteps)
+                window = GNNGraph[]
+                for kk in 0:nsteps
+                    t = ii + kk
+                    dyn = hcat(_norm(waterlevel[:, t], mu_wl, s_wl),
+                               _norm(velocity[:, t],   mu_v,  s_v))
+                    if has_tau
+                        dyn = hcat(dyn, _norm(tau[:, t], mu_t, s_t))
+                    end
+                    push!(window, GNNGraph(Int64.(edges[1,:]), Int64.(edges[2,:]),
+                                          ndata=(; static=data_static, dynamic=dyn')))
+                end
+                push!(data_x, window)
+            end
+        end
+    end
+    return data_x
+end

@@ -12,7 +12,13 @@ end
 
 struct NoNoise <: TrainStrategy end
 
-function compute_loss(strategy::SingleStepNoise, model, x, y, device)
+struct MultiStepRollout <: TrainStrategy
+    nsteps::Int
+    noise_scale::Float64
+end
+
+function compute_loss(strategy::SingleStepNoise, model, batch, device)
+    x, y = batch
     yhat_noiseless = model(x, x.ndata.dynamic, x.ndata.static)
     noiseless_loss = Flux.mse(yhat_noiseless, y.x)
     x.ndata.dynamic .+= (strategy.scale * randn(size(x.ndata.dynamic))) |> device
@@ -22,11 +28,39 @@ function compute_loss(strategy::SingleStepNoise, model, x, y, device)
     return batch_loss, grad[1], noiseless_loss
 end
 
-function compute_loss(::NoNoise, model, x, y, device)
+function compute_loss(::NoNoise, model, batch, device)
+    x, y = batch
     batch_loss, grad = Flux.withgradient(model) do m
         Flux.mse(m(x, x.ndata.dynamic, x.ndata.static), y.x)
     end
     return batch_loss, grad[1], batch_loss
+end
+
+function compute_loss(strategy::MultiStepRollout, model, batch, device)
+    x_seq = batch  # Vector{GNNGraph} of length nsteps+1
+    has_tau = size(x_seq[1].ndata.dynamic, 1) >= 3
+
+    # noiseless_loss: single first-step MSE — consistent comparator across all strategies
+    yhat0 = model(x_seq[1], x_seq[1].ndata.dynamic, x_seq[1].ndata.static)
+    noiseless_loss = Flux.mse(yhat0, x_seq[2].ndata.dynamic[1:2, :])
+
+    # Multi-step rollout: gradients flow back through the full chain
+    batch_loss, grad = Flux.withgradient(model) do m
+        dyn_cur = x_seq[1].ndata.dynamic
+        total_loss = 0.0f0
+        for k in 1:strategy.nsteps
+            if strategy.noise_scale > 0
+                dyn_cur = dyn_cur .+ (Float32(strategy.noise_scale) .* randn(Float32, size(dyn_cur)) |> device)
+            end
+            yhat_k = m(x_seq[k], dyn_cur, x_seq[k].ndata.static)
+            total_loss += Flux.mse(yhat_k, x_seq[k+1].ndata.dynamic[1:2, :])
+            dyn_cur = has_tau ?
+                vcat(yhat_k, x_seq[k+1].ndata.dynamic[3:end, :]) :
+                yhat_k
+        end
+        total_loss
+    end
+    return batch_loss, grad[1], noiseless_loss
 end
 
 Base.@kwdef mutable struct TrainSettings
@@ -65,8 +99,8 @@ function train_model!(model, dl_train, dl_valid, device, settings::TrainSettings
         val_loss = 0.0f0
         noiseless_loss = 0.0f0
 
-        for (x, y) in dl_train
-            batch_loss, grads, nl_loss = compute_loss(train_strategy, model, x, y, device)
+        for batch in dl_train
+            batch_loss, grads, nl_loss = compute_loss(train_strategy, model, batch, device)
             Flux.Optimise.update!(opt, model, grads)
             loss += batch_loss
             noiseless_loss += nl_loss
