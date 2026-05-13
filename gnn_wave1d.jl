@@ -35,11 +35,11 @@ settings.train_data_path = "data/lake1d_surge/train.jld2"
 settings.valid_data_path = "data/lake1d_surge/valid.jld2"
 
 norm_strategy  = GlobalNorm(compute_norm_stats(settings.train_data_path))  # or: PerTrajectoryNorm()
-train_strategy = SingleStepNoise(3e-2)  # or: NoNoise(), MultiStepRollout(5, 0.0)
+train_strategy = SingleStepNoise(3e-2)  # or: NoNoise(), MultiStepRollout(5, 0.0), PushforwardRollout(5, 0.0)
 
 val_x, val_y = load_data(settings.valid_data_path, norm_strategy)
 
-if train_strategy isa MultiStepRollout
+if train_strategy isa Union{MultiStepRollout, PushforwardRollout}
     train_x = load_data_multistep(settings.train_data_path, norm_strategy, train_strategy.nsteps)
     dl_train = DataLoader(train_x, batchsize=1, shuffle=true, collate=false)
 else

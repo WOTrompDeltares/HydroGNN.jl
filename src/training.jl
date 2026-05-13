@@ -17,6 +17,11 @@ struct MultiStepRollout <: TrainStrategy
     noise_scale::Float64
 end
 
+struct PushforwardRollout <: TrainStrategy
+    nsteps::Int
+    noise_scale::Float64
+end
+
 function compute_loss(strategy::SingleStepNoise, model, batch, device)
     x, y = batch
     noiseless_loss = Flux.mse(model(x), y.x)
@@ -55,6 +60,30 @@ function compute_loss(strategy::MultiStepRollout, model, batch, device)
             dyn_cur = yhat_k
         end
         total_loss
+    end
+    return batch_loss, grad[1], noiseless_loss
+end
+
+function compute_loss(strategy::PushforwardRollout, model, batch, device)
+    x_seq = batch  # Vector{GNNGraph} of length nsteps+1
+
+    # noiseless_loss: single first-step MSE — consistent comparator across all strategies
+    noiseless_loss = Flux.mse(model(x_seq[1]), x_seq[2].ndata.dynamic)
+
+    # K-1 detached steps to reach a realistic drifted state, then one gradient step
+    dyn_cur = x_seq[1].ndata.dynamic
+    for k in 1:(strategy.nsteps - 1)
+        if strategy.noise_scale > 0
+            dyn_cur = dyn_cur .+ (Float32(strategy.noise_scale) .* randn(Float32, size(dyn_cur)) |> device)
+        end
+        g_k = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
+        dyn_cur = Flux.ignore_derivatives(() -> model(g_k))
+    end
+
+    # Final step: single gradient computation
+    g_last = GNNGraph(x_seq[end-1], ndata=(; x_seq[end-1].ndata..., dynamic=dyn_cur))
+    batch_loss, grad = Flux.withgradient(model) do m
+        Flux.mse(m(g_last), x_seq[end].ndata.dynamic)
     end
     return batch_loss, grad[1], noiseless_loss
 end
