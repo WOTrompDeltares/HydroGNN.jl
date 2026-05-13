@@ -119,23 +119,20 @@ function load_data(fn, norm_strategy::NormStrategy)
 
             mu_wl, mu_v = traj_stats.mu[1],    traj_stats.mu[2]
             s_wl,  s_v  = traj_stats.sigma[1], traj_stats.sigma[2]
+            mu_t = has_tau ? traj_stats.mu[3]    : 0f0
+            s_t  = has_tau ? traj_stats.sigma[3] : 1f0
+            nnodes = size(waterlevel, 1)
+            _forc(t) = has_tau ? reshape(_norm(tau[:,t], mu_t, s_t), 1, nnodes) :
+                                 zeros(Float32, 0, nnodes)
 
             for ii in 1:(size(velocity,2)-1)
                 data_static = hcat(bathymetry, mesh_pos, node_onehot')
-
-                wl_norm = _norm(waterlevel[:,ii], mu_wl, s_wl)
-                v_norm  = _norm(velocity[:,ii],   mu_v,  s_v)
-                data_dym = hcat(wl_norm, v_norm)
-                if has_tau
-                    mu_t, s_t = traj_stats.mu[3], traj_stats.sigma[3]
-                    data_dym = hcat(data_dym, _norm(tau[:,ii], mu_t, s_t))
-                end
-
-                # Labels: normalize waterlevel and velocity at next step
+                data_dym = hcat(_norm(waterlevel[:,ii], mu_wl, s_wl),
+                                _norm(velocity[:,ii],   mu_v,  s_v))
                 y = hcat(_norm(waterlevel[:,ii+1], mu_wl, s_wl),
                          _norm(velocity[:,ii+1],   mu_v,  s_v))
 
-                push!(data_x, GNNGraph(Int64.(edges[1,:]), Int64.(edges[2,:]), ndata=(; static=data_static', dynamic=data_dym')))
+                push!(data_x, GNNGraph(Int64.(edges[1,:]), Int64.(edges[2,:]), ndata=(; static=data_static', dynamic=data_dym', forcing=_forc(ii))))
                 push!(data_y, GNNGraph(Int64.(edges[1,:]), Int64.(edges[2,:]), ndata=y'))
             end
         end
@@ -174,9 +171,11 @@ function load_data_multistep(fn, norm_strategy::NormStrategy, nsteps::Int)
 
             mu_wl, mu_v = traj_stats.mu[1], traj_stats.mu[2]
             s_wl,  s_v  = traj_stats.sigma[1], traj_stats.sigma[2]
-            if has_tau
-                mu_t, s_t = traj_stats.mu[3], traj_stats.sigma[3]
-            end
+            mu_t = has_tau ? traj_stats.mu[3]    : 0f0
+            s_t  = has_tau ? traj_stats.sigma[3] : 1f0
+            nnodes = size(waterlevel, 1)
+            _forc(t) = has_tau ? reshape(_norm(tau[:,t], mu_t, s_t), 1, nnodes) :
+                                 zeros(Float32, 0, nnodes)
 
             nT = size(velocity, 2)
             for ii in 1:(nT - nsteps)
@@ -185,11 +184,8 @@ function load_data_multistep(fn, norm_strategy::NormStrategy, nsteps::Int)
                     t = ii + kk
                     dyn = hcat(_norm(waterlevel[:, t], mu_wl, s_wl),
                                _norm(velocity[:, t],   mu_v,  s_v))
-                    if has_tau
-                        dyn = hcat(dyn, _norm(tau[:, t], mu_t, s_t))
-                    end
                     push!(window, GNNGraph(Int64.(edges[1,:]), Int64.(edges[2,:]),
-                                          ndata=(; static=data_static, dynamic=dyn')))
+                                          ndata=(; static=data_static, dynamic=dyn', forcing=_forc(t))))
                 end
                 push!(data_x, window)
             end

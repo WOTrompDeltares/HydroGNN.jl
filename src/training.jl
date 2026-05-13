@@ -19,11 +19,10 @@ end
 
 function compute_loss(strategy::SingleStepNoise, model, batch, device)
     x, y = batch
-    yhat_noiseless = model(x, x.ndata.dynamic, x.ndata.static)
-    noiseless_loss = Flux.mse(yhat_noiseless, y.x)
+    noiseless_loss = Flux.mse(model(x), y.x)
     x.ndata.dynamic .+= (strategy.scale * randn(size(x.ndata.dynamic))) |> device
     batch_loss, grad = Flux.withgradient(model) do m
-        Flux.mse(m(x, x.ndata.dynamic, x.ndata.static), y.x)
+        Flux.mse(m(x), y.x)
     end
     return batch_loss, grad[1], noiseless_loss
 end
@@ -31,18 +30,16 @@ end
 function compute_loss(::NoNoise, model, batch, device)
     x, y = batch
     batch_loss, grad = Flux.withgradient(model) do m
-        Flux.mse(m(x, x.ndata.dynamic, x.ndata.static), y.x)
+        Flux.mse(m(x), y.x)
     end
     return batch_loss, grad[1], batch_loss
 end
 
 function compute_loss(strategy::MultiStepRollout, model, batch, device)
     x_seq = batch  # Vector{GNNGraph} of length nsteps+1
-    has_tau = size(x_seq[1].ndata.dynamic, 1) >= 3
 
     # noiseless_loss: single first-step MSE — consistent comparator across all strategies
-    yhat0 = model(x_seq[1], x_seq[1].ndata.dynamic, x_seq[1].ndata.static)
-    noiseless_loss = Flux.mse(yhat0, x_seq[2].ndata.dynamic[1:2, :])
+    noiseless_loss = Flux.mse(model(x_seq[1]), x_seq[2].ndata.dynamic)
 
     # Multi-step rollout: gradients flow back through the full chain
     batch_loss, grad = Flux.withgradient(model) do m
@@ -52,11 +49,10 @@ function compute_loss(strategy::MultiStepRollout, model, batch, device)
             if strategy.noise_scale > 0
                 dyn_cur = dyn_cur .+ (Float32(strategy.noise_scale) .* randn(Float32, size(dyn_cur)) |> device)
             end
-            yhat_k = m(x_seq[k], dyn_cur, x_seq[k].ndata.static)
-            total_loss += Flux.mse(yhat_k, x_seq[k+1].ndata.dynamic[1:2, :])
-            dyn_cur = has_tau ?
-                vcat(yhat_k, x_seq[k+1].ndata.dynamic[3:end, :]) :
-                yhat_k
+            g_k = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
+            yhat_k = m(g_k)
+            total_loss += Flux.mse(yhat_k, x_seq[k+1].ndata.dynamic)
+            dyn_cur = yhat_k
         end
         total_loss
     end
@@ -107,7 +103,7 @@ function train_model!(model, dl_train, dl_valid, device, settings::TrainSettings
         end
 
         for (x, y) in dl_valid
-            yhat = model(x, x.ndata.dynamic, x.ndata.static)
+            yhat = model(x)
             val_loss += Flux.mse(yhat, y.x)
         end
 

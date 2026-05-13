@@ -27,10 +27,12 @@ function GNN(din::Int, dhidden::Int, dout::Int, nlayers::Int; skip::Bool=false)
     )
 end
 
-function (m::GNN)(g::GNNGraph, x_dym, x_static)
+function (m::GNN)(g::GNNGraph)
+    x_dym    = vcat(g.ndata.dynamic, g.ndata.forcing)
+    x_static = g.ndata.static
     x = cat(x_dym, x_static; dims=1)
     x1 = m.enc(x)
     x1 = m.proc(g, x1)
     x1 = m.dec(x1)
-    return x1 .+ x_dym[1:2,:]
+    return x1 .+ g.ndata.dynamic
 end

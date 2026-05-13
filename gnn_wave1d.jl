@@ -50,12 +50,12 @@ dl_valid = DataLoader((val_x, val_y), batchsize=settings.nbatch, shuffle=false, 
 
 # %%
 
-din = size(val_x[1].ndata.dynamic, 1) + size(val_x[1].ndata.static, 1)
+din = size(val_x[1].ndata.dynamic, 1) + size(val_x[1].ndata.forcing, 1) + size(val_x[1].ndata.static, 1)
 dout = size(val_y[1].ndata.x, 1)
 
 model = GNN(din, settings.dhidden, dout, settings.nhidden; skip=settings.skip_connections)
 
-model(val_x[1], val_x[1].ndata.dynamic, val_x[1].ndata.static)
+model(val_x[1])
 
 # %%
 

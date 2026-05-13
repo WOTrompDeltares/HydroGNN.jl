@@ -18,68 +18,40 @@ function predict_trajectory(fn, traj_ind::Int, model, norm_strategy::NormStrateg
     mu_wl, mu_v = ns.mu[1],    ns.mu[2]
     s_wl,  s_v  = ns.sigma[1], ns.sigma[2]
     has_tau = length(ns.mu) >= 3
-    if has_tau
-        mu_t, s_t = ns.mu[3], ns.sigma[3]
-    end
+    mu_t = has_tau ? ns.mu[3]    : 0f0
+    s_t  = has_tau ? ns.sigma[3] : 1f0
+    nnodes = size(waterlevel, 1)
 
     _n(x, mu, s) = (x .- mu) ./ s
     _d(x, mu, s) = x .* s .+ mu
+    _forc(t) = has_tau ? reshape(_n(tau[:,t], mu_t, s_t), 1, nnodes) :
+                         zeros(Float32, 0, nnodes)
 
     gt   = []
     pred = []
 
-    # Initial state in normalized space
-    wl0_norm = _n(waterlevel[:,1], mu_wl, s_wl)
-    v0_norm  = _n(velocity[:,1],   mu_v,  s_v)
-    if has_tau
-        tau0_norm = _n(tau[:,1], mu_t, s_t)
-        dyn0 = hcat(wl0_norm, v0_norm, tau0_norm)
-    else
-        dyn0 = hcat(wl0_norm, v0_norm)
-    end
-
-    x0 = GNNGraph(Int64.(edges[1,:]), Int64.(edges[2,:]), ndata=(; static=data_static', dynamic=dyn0'))
+    dyn0 = hcat(_n(waterlevel[:,1], mu_wl, s_wl), _n(velocity[:,1], mu_v, s_v))'
+    x0 = GNNGraph(Int64.(edges[1,:]), Int64.(edges[2,:]), ndata=(; static=data_static', dynamic=dyn0, forcing=_forc(1)))
     push!(gt,   x0)
     push!(pred, x0)
 
     for ii in 1:nsteps
         println("Predicting time step: $ii")
-        # yhat is in normalized space (waterlevel, velocity rows)
-        yhat_norm = model(pred[end], pred[end].ndata.dynamic, pred[end].ndata.static)
+        yhat_norm = model(pred[end])
 
-        # Build next input: yhat_norm for wl/v, plus normalized tau at next step
-        if has_tau
-            tau_next_norm = _n(tau[:,ii+1], mu_t, s_t)
-            dyn_next = hcat(yhat_norm', tau_next_norm)
-        else
-            dyn_next = yhat_norm'
-        end
-        x_next = GNNGraph(Int64.(edges[1,:]), Int64.(edges[2,:]), ndata=(; static=data_static', dynamic=dyn_next'))
+        x_next = GNNGraph(Int64.(edges[1,:]), Int64.(edges[2,:]), ndata=(; static=data_static', dynamic=yhat_norm, forcing=_forc(ii+1)))
         push!(pred, x_next)
 
-        # Ground truth in normalized space for consistent comparison
-        wl_gt_norm = _n(waterlevel[:,ii+1], mu_wl, s_wl)
-        v_gt_norm  = _n(velocity[:,ii+1],   mu_v,  s_v)
-        if has_tau
-            tau_gt_norm = _n(tau[:,ii+1], mu_t, s_t)
-            dyn_gt = hcat(wl_gt_norm, v_gt_norm, tau_gt_norm)
-        else
-            dyn_gt = hcat(wl_gt_norm, v_gt_norm)
-        end
-        x_gt = GNNGraph(Int64.(edges[1,:]), Int64.(edges[2,:]), ndata=(; static=data_static', dynamic=dyn_gt'))
+        dyn_gt = hcat(_n(waterlevel[:,ii+1], mu_wl, s_wl), _n(velocity[:,ii+1], mu_v, s_v))'
+        x_gt = GNNGraph(Int64.(edges[1,:]), Int64.(edges[2,:]), ndata=(; static=data_static', dynamic=dyn_gt, forcing=_forc(ii+1)))
         push!(gt, x_gt)
     end
 
-    # Denormalize predictions and ground truth back to physical units
     function denorm_graph(g)
-        dyn = g.ndata.dynamic  # (nfeat, nnodes)
-        dyn_phys = similar(dyn)
-        dyn_phys[1,:] = _d(dyn[1,:], mu_wl, s_wl)
-        dyn_phys[2,:] = _d(dyn[2,:], mu_v,  s_v)
-        if has_tau
-            dyn_phys[3,:] = _d(dyn[3,:], mu_t, s_t)
-        end
-        return GNNGraph(g, ndata=(; static=g.ndata.static, dynamic=dyn_phys))
+        dyn_phys = hcat(_d(g.ndata.dynamic[1,:], mu_wl, s_wl),
+                        _d(g.ndata.dynamic[2,:], mu_v,  s_v))'
+        forc_phys = _d(g.ndata.forcing, mu_t, s_t)
+        return GNNGraph(g, ndata=(; static=g.ndata.static, dynamic=dyn_phys, forcing=forc_phys))
     end
 
     gt_phys   = denorm_graph.(gt)
