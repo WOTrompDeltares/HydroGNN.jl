@@ -4,11 +4,35 @@ using ProgressMeter
 using ParameterSchedulers
 using TOML
 
+abstract type TrainStrategy end
+
+struct SingleStepNoise <: TrainStrategy
+    scale::Float64
+end
+
+struct NoNoise <: TrainStrategy end
+
+function compute_loss(strategy::SingleStepNoise, model, x, y, device)
+    yhat_noiseless = model(x, x.ndata.dynamic, x.ndata.static)
+    noiseless_loss = Flux.mse(yhat_noiseless, y.x)
+    x.ndata.dynamic .+= (strategy.scale * randn(size(x.ndata.dynamic))) |> device
+    batch_loss, grad = Flux.withgradient(model) do m
+        Flux.mse(m(x, x.ndata.dynamic, x.ndata.static), y.x)
+    end
+    return batch_loss, grad[1], noiseless_loss
+end
+
+function compute_loss(::NoNoise, model, x, y, device)
+    batch_loss, grad = Flux.withgradient(model) do m
+        Flux.mse(m(x, x.ndata.dynamic, x.ndata.static), y.x)
+    end
+    return batch_loss, grad[1], batch_loss
+end
+
 Base.@kwdef mutable struct TrainSettings
     dhidden::Int = 32
     nhidden::Int = 5
     nepochs::Int = 250
-    noise::Float64 = 2.5e-2
     lr::Float64 = 3e-3
     lr_final::Float64 = 1e-5
     lr_step::Int = 10
@@ -20,9 +44,8 @@ Base.@kwdef mutable struct TrainSettings
     save_dir::String = "models"
 end
 
-function train_model!(model, dl_train, dl_valid, device, settings::TrainSettings, norm_strategy::NormStrategy)
+function train_model!(model, dl_train, dl_valid, device, settings::TrainSettings, norm_strategy::NormStrategy, train_strategy::TrainStrategy)
     nepochs = settings.nepochs
-    noise = settings.noise
     lr = settings.lr
     lr_final = settings.lr_final
     lr_step = settings.lr_step
@@ -43,16 +66,10 @@ function train_model!(model, dl_train, dl_valid, device, settings::TrainSettings
         noiseless_loss = 0.0f0
 
         for (x, y) in dl_train
-            yhat_noiseless = model(x, x.ndata.dynamic, x.ndata.static)
-            noiseless_loss += Flux.mse(yhat_noiseless, y.x)
-
-            x.ndata.dynamic .+= (noise * randn(size(x.ndata.dynamic))) |> device
-            batch_loss, grad = Flux.withgradient(model) do m
-                yhat = m(x, x.ndata.dynamic, x.ndata.static)
-                Flux.mse(yhat, y.x)
-            end
-            Flux.Optimise.update!(opt, model, grad[1])
+            batch_loss, grads, nl_loss = compute_loss(train_strategy, model, x, y, device)
+            Flux.Optimise.update!(opt, model, grads)
             loss += batch_loss
+            noiseless_loss += nl_loss
         end
 
         for (x, y) in dl_valid
@@ -75,8 +92,9 @@ function train_model!(model, dl_train, dl_valid, device, settings::TrainSettings
     mkpath(model_dir)
 
     jldsave(joinpath(model_dir, "model.jld2");
-        model         = model |> cpu,
-        norm_strategy = norm_strategy)
+        model          = model |> cpu,
+        norm_strategy  = norm_strategy,
+        train_strategy = train_strategy)
 
     open(joinpath(model_dir, "settings.toml"), "w") do io
         TOML.print(io, Dict(string(f) => getfield(settings, f) for f in fieldnames(TrainSettings)))

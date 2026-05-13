@@ -8,7 +8,8 @@ include("gnn.jl")
 export GNN
 
 include("training.jl")
-export TrainSettings, train_model!
+export TrainSettings, train_model!,
+       TrainStrategy, SingleStepNoise, NoNoise
 
 include("plot.jl")
 export plot_loss, movie_graphs, movie_graphs_comp

@@ -24,18 +24,18 @@ settings = TrainSettings()
 
 settings.model_name = "test_3"
 settings.skip_connections = true
-settings.noise = 3e-2
 settings.nepochs = 200
 settings.nbatch = 32
-settings.dhidden = 32
-settings.nhidden = 2
+settings.dhidden = 16
+settings.nhidden = 5
 settings.save_dir = "models/lake1d_surge"
 
 
 settings.train_data_path = "data/lake1d_surge/train.jld2"
 settings.valid_data_path = "data/lake1d_surge/valid.jld2"
 
-norm_strategy = GlobalNorm(compute_norm_stats(settings.train_data_path))  # or: PerTrajectoryNorm()
+norm_strategy  = GlobalNorm(compute_norm_stats(settings.train_data_path))  # or: PerTrajectoryNorm()
+train_strategy = SingleStepNoise(3e-2)  # or: NoNoise()
 
 train_x, train_y = load_data(settings.train_data_path, norm_strategy)
 val_x, val_y = load_data(settings.valid_data_path, norm_strategy)
@@ -66,7 +66,7 @@ model = model |> device
 dl_train = dl_train |> device
 dl_valid = dl_valid |> device
 
-train_loss, loss_noiseless, valid_loss = train_model!(model, dl_train, dl_valid, device, settings, norm_strategy)
+train_loss, loss_noiseless, valid_loss = train_model!(model, dl_train, dl_valid, device, settings, norm_strategy, train_strategy)
 
 # %%
 
