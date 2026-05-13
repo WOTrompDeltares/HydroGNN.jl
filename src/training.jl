@@ -5,6 +5,7 @@ using ParameterSchedulers
 using TOML
 
 abstract type TrainStrategy end
+abstract type RolloutStrategy <: TrainStrategy end
 
 struct SingleStepNoise <: TrainStrategy
     scale::Float64
@@ -12,15 +13,42 @@ end
 
 struct NoNoise <: TrainStrategy end
 
-struct MultiStepRollout <: TrainStrategy
+struct MultiStepRollout <: RolloutStrategy
     nsteps::Int
     noise_scale::Float64
 end
 
-struct PushforwardRollout <: TrainStrategy
+struct PushforwardRollout <: RolloutStrategy
     nsteps::Int
     noise_scale::Float64
 end
+
+mutable struct ScheduledRollout <: RolloutStrategy
+    schedule          # callable: epoch -> nsteps (e.g. a ParameterSchedulers schedule)
+    nsteps::Int       # maximum nsteps — used by load_data_multistep at data-load time
+    noise_scale::Float64
+    current_nsteps::Int  # updated each epoch by step_schedule!
+end
+
+function ScheduledRollout(schedule, nsteps::Int, noise_scale::Float64)
+    ScheduledRollout(schedule, nsteps, noise_scale, 1)
+end
+
+step_schedule!(::TrainStrategy, epoch) = nothing
+step_schedule!(s::ScheduledRollout, epoch) = (s.current_nsteps = min(round(Int, s.schedule(epoch)), s.nsteps))
+
+mutable struct ScheduledPushforward <: RolloutStrategy
+    schedule          # callable: epoch -> nsteps
+    nsteps::Int       # maximum nsteps — used by load_data_multistep at data-load time
+    noise_scale::Float64
+    current_nsteps::Int
+end
+
+function ScheduledPushforward(schedule, nsteps::Int, noise_scale::Float64)
+    ScheduledPushforward(schedule, nsteps, noise_scale, 1)
+end
+
+step_schedule!(s::ScheduledPushforward, epoch) = (s.current_nsteps = min(round(Int, s.schedule(epoch)), s.nsteps))
 
 function compute_loss(strategy::SingleStepNoise, model, batch, device)
     x, y = batch
@@ -88,6 +116,48 @@ function compute_loss(strategy::PushforwardRollout, model, batch, device)
     return batch_loss, grad[1], noiseless_loss
 end
 
+function compute_loss(strategy::ScheduledPushforward, model, batch, device)
+    x_seq = batch
+    noiseless_loss = Flux.mse(model(x_seq[1]), x_seq[2].ndata.dynamic)
+    nsteps = strategy.current_nsteps
+
+    dyn_cur = x_seq[1].ndata.dynamic
+    for k in 1:(nsteps - 1)
+        if strategy.noise_scale > 0
+            dyn_cur = dyn_cur .+ (Float32(strategy.noise_scale) .* randn(Float32, size(dyn_cur)) |> device)
+        end
+        g_k = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
+        dyn_cur = Flux.ignore_derivatives(() -> model(g_k))
+    end
+
+    g_last = GNNGraph(x_seq[nsteps], ndata=(; x_seq[nsteps].ndata..., dynamic=dyn_cur))
+    batch_loss, grad = Flux.withgradient(model) do m
+        Flux.mse(m(g_last), x_seq[nsteps+1].ndata.dynamic)
+    end
+    return batch_loss, grad[1], noiseless_loss
+end
+
+function compute_loss(strategy::ScheduledRollout, model, batch, device)
+    x_seq = batch
+    noiseless_loss = Flux.mse(model(x_seq[1]), x_seq[2].ndata.dynamic)
+    nsteps = strategy.current_nsteps
+    batch_loss, grad = Flux.withgradient(model) do m
+        dyn_cur = x_seq[1].ndata.dynamic
+        total_loss = 0.0f0
+        for k in 1:nsteps
+            if strategy.noise_scale > 0
+                dyn_cur = dyn_cur .+ (Float32(strategy.noise_scale) .* randn(Float32, size(dyn_cur)) |> device)
+            end
+            g_k = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
+            yhat_k = m(g_k)
+            total_loss += Flux.mse(yhat_k, x_seq[k+1].ndata.dynamic)
+            dyn_cur = yhat_k
+        end
+        total_loss
+    end
+    return batch_loss, grad[1], noiseless_loss
+end
+
 Base.@kwdef mutable struct TrainSettings
     dhidden::Int = 32
     nhidden::Int = 5
@@ -120,6 +190,7 @@ function train_model!(model, dl_train, dl_valid, device, settings::TrainSettings
 
     for epoch in 1:nepochs
         Flux.adjust!(opt, eta=schedule(epoch))
+        step_schedule!(train_strategy, epoch)
         loss = 0.0f0
         val_loss = 0.0f0
         noiseless_loss = 0.0f0
