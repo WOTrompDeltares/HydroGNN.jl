@@ -139,12 +139,12 @@ D_center=Float32.(depth_profile(grid_h, D_min, D_max, D_edges, D_widths))
 W=100.0 # width
 C=60.0 # Chezy friction factor
 
-datadir = "data/wave1d"
+datadir = "data/lake1d_surge"
 if !isdir(datadir)
     mkpath(datadir)
 end
 
-train_frac = 0.6
+train_frac = 0.7
 val_frac = 0.2
 
 # time span
@@ -161,14 +161,16 @@ x_h = grid_h
 x_u = grid_u
 x=ComponentVector(h=x_h,u=x_u)
 
-ini_pos = 0.25:0.01:0.75
-n_pos = length(ini_pos)
+# ini_pos = 0.25:0.01:0.75
+ini_amp = 0.1:0.05:1
+ini_period = 0.25:0.25:2.0
+n_traj = length(Iterators.product(ini_amp, ini_period))
 
 # This makes a symmetric train data set
 # Val, test sets are not necessarily symmetric
-train_inds = sample(rng, 1:n_pos÷2, floor(Int, train_frac*n_pos/2), replace=false)
-train_inds = vcat(train_inds, (n_pos+1).-train_inds)
-rem_inds = setdiff(1:n_pos, train_inds)
+train_inds = sample(rng, 1:n_traj÷2, floor(Int, train_frac*n_traj/2), replace=false)
+train_inds = vcat(train_inds, (n_traj+1).-train_inds)
+rem_inds = setdiff(1:n_traj, train_inds)
 val_inds = sample(rng, rem_inds, floor(Int, length(rem_inds)*val_frac/(1-train_frac)), replace=false)
 test_inds = setdiff(rem_inds, val_inds)
 
@@ -188,15 +190,15 @@ edges[2,:] = edges[1,:] .+ 1
 
 # wind stress as a function of time
 # wind stress forcing
-# function tau_func(t,a=1.0,T=3600.0)
-#     return (a*sin(2*π*t/T))^2
-# end
+function tau_func(t,a=1.0,T=3600.0)
+    return (a*sin(2*π*t/T))^2
+end
 # tau(t)=tau_func(t,1.0,8*3600.0) # set parameters
 
 function constant_func(t,value=0.0)
     return value
 end
-tau(t) = constant_func(t, 0.0)
+# tau(t) = constant_func(t, 0.0)
 q_left(t)=constant_func(t,0.0)
 q_right(t)=constant_func(t,0.0) #Note q_left-q_right is the nett influx
 
@@ -206,12 +208,20 @@ for file in ["train", "valid", "test"]
     end
 end
 
-for (ind, pos) in enumerate(ini_pos)
+# for (ind, pos) in enumerate(ini_pos)
+for (ind, (amp, period)) in enumerate(Iterators.product(ini_amp, ini_period))
     
+    tau(t) = tau_func(t, amp, period*3600.0)
+
     f = Wave1DSurge_cpu(g,D,L,W,dx,nx,rho,C,tau,q_left,q_right)
-    x0 = initial_state_bump(f,1,0.05,pos,0.0) # h bump
+    # x0 = initial_state_bump(f,1,0.05,pos,0.0) # h bump
     #x0=initial_state_bump(f,0.0,0.05,0.3,0.1) # u bump
     
+    x0 = ComponentVector(
+        h = zeros(length(grid_h)),
+        u = zeros(length(grid_u))
+    )
+
     prob = ODEProblem(f, x0, (t_start, t_end))
     @time sol = solve(prob, Tsit5())
     
@@ -227,6 +237,9 @@ for (ind, pos) in enumerate(ini_pos)
     velocity_edge = Float32.(cat([x.u for x in sol(times).u]..., dims=2))
     waterlevel = Float32.(cat([x.h for x in sol(times).u]..., dims=2))
 
+    winds = Float32.(tau.(times))
+    winds = repeat(winds', size(waterlevel,1), 1)
+
     if ind in train_inds
         println("Train!")
         jldopen(joinpath(datadir, "train.jld2"), "a") do f
@@ -241,6 +254,7 @@ for (ind, pos) in enumerate(ini_pos)
             traj_group["node_type"] = node_type
             traj_group["bathymetry"] = D_center
             traj_group["n_nodes"] = size(mesh_pos,2)
+            traj_group["tau"] = winds
         end
     elseif ind in val_inds
         println("Valid!")
@@ -256,6 +270,7 @@ for (ind, pos) in enumerate(ini_pos)
             traj_group["node_type"] = node_type
             traj_group["bathymetry"] = D_center
             traj_group["n_nodes"] = size(mesh_pos,2)
+            traj_group["tau"] = winds
         end
     else
         println("Test!")
@@ -271,6 +286,8 @@ for (ind, pos) in enumerate(ini_pos)
             traj_group["node_type"] = node_type
             traj_group["bathymetry"] = D_center
             traj_group["n_nodes"] = size(mesh_pos,2)
+            traj_group["tau"] = winds
+
         end
     end
 end

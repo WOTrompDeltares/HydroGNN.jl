@@ -1,7 +1,8 @@
 module HydroGNN
 
 include("data.jl")
-export load_data
+export load_data, DynamicNormStats, compute_norm_stats,
+       NormStrategy, GlobalNorm, PerTrajectoryNorm
 
 include("gnn.jl")
 export GNN

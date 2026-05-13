@@ -21,8 +21,8 @@ Flux.@layer GNN
 function GNN(din::Int, dhidden::Int, dout::Int, nlayers::Int; skip::Bool=false)
     return GNN(
         Dense(din=>dhidden, swish),
-        GNNChain([skip ? ResGraphConv(SAGEConv(dhidden=>dhidden, swish)) :
-                         SAGEConv(dhidden=>dhidden, swish) for _ in 1:nlayers]...),
+        GNNChain([skip ? ResGraphConv(GraphConv(dhidden=>dhidden, swish)) :
+                         GraphConv(dhidden=>dhidden, swish) for _ in 1:nlayers]...),
         Dense(dhidden=>dout)
     )
 end
@@ -32,5 +32,5 @@ function (m::GNN)(g::GNNGraph, x_dym, x_static)
     x1 = m.enc(x)
     x1 = m.proc(g, x1)
     x1 = m.dec(x1)
-    return x1 .+ x_dym
+    return x1 .+ x_dym[1:2,:]
 end

@@ -22,13 +22,23 @@ end
 
 settings = TrainSettings()
 
-settings.model_name = "test_run7"
+settings.model_name = "test_3"
 settings.skip_connections = true
-settings.noise = 1e-2
+settings.noise = 3e-2
 settings.nepochs = 200
+settings.nbatch = 32
+settings.dhidden = 32
+settings.nhidden = 2
+settings.save_dir = "models/lake1d_surge"
 
-train_x, train_y = load_data(settings.train_data_path)
-val_x, val_y = load_data(settings.valid_data_path)
+
+settings.train_data_path = "data/lake1d_surge/train.jld2"
+settings.valid_data_path = "data/lake1d_surge/valid.jld2"
+
+norm_strategy = GlobalNorm(compute_norm_stats(settings.train_data_path))  # or: PerTrajectoryNorm()
+
+train_x, train_y = load_data(settings.train_data_path, norm_strategy)
+val_x, val_y = load_data(settings.valid_data_path, norm_strategy)
 
 # %%
 
@@ -56,7 +66,7 @@ model = model |> device
 dl_train = dl_train |> device
 dl_valid = dl_valid |> device
 
-train_loss, loss_noiseless, valid_loss = train_model!(model, dl_train, dl_valid, device, settings)
+train_loss, loss_noiseless, valid_loss = train_model!(model, dl_train, dl_valid, device, settings, norm_strategy)
 
 # %%
 
@@ -65,4 +75,4 @@ plot_loss(train_loss, loss_noiseless, valid_loss, joinpath(model_dir, "loss_plot
 
 # %%
 
-evaluate_all_trajectories(settings.valid_data_path, model |> cpu, model_dir)
+evaluate_all_trajectories(settings.valid_data_path, model |> cpu, model_dir, norm_strategy)

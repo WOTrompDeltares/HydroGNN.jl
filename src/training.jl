@@ -20,7 +20,7 @@ Base.@kwdef mutable struct TrainSettings
     save_dir::String = "models"
 end
 
-function train_model!(model, dl_train, dl_valid, device, settings::TrainSettings)
+function train_model!(model, dl_train, dl_valid, device, settings::TrainSettings, norm_strategy::NormStrategy)
     nepochs = settings.nepochs
     noise = settings.noise
     lr = settings.lr
@@ -74,7 +74,9 @@ function train_model!(model, dl_train, dl_valid, device, settings::TrainSettings
     model_dir = joinpath(settings.save_dir, settings.model_name)
     mkpath(model_dir)
 
-    jldsave(joinpath(model_dir, "model.jld2"); model=model |> cpu)
+    jldsave(joinpath(model_dir, "model.jld2");
+        model         = model |> cpu,
+        norm_strategy = norm_strategy)
 
     open(joinpath(model_dir, "settings.toml"), "w") do io
         TOML.print(io, Dict(string(f) => getfield(settings, f) for f in fieldnames(TrainSettings)))
