@@ -48,6 +48,10 @@ nhidden_candidates = [2, 3, 5, 8]
 # ─── Load existing log to skip completed trials ───────────────────────────────
 completed = isfile(log_file) ? TOML.parsefile(log_file) : Dict{String, Any}()
 
+best_model          = nothing
+best_model_settings = nothing
+best_val_global     = Inf
+
 # ─── Trial loop ───────────────────────────────────────────────────────────────
 for dhidden in dhidden_candidates, nhidden in nhidden_candidates
     trial_name = "dh$(dhidden)_nh$(nhidden)"
@@ -84,10 +88,6 @@ for dhidden in dhidden_candidates, nhidden in nhidden_candidates
 
     trial_dir = joinpath(save_dir, trial_name)
     mkpath(trial_dir)
-    jldsave(joinpath(trial_dir, "model.jld2");
-        model          = model |> cpu,
-        norm_strategy  = norm_strategy,
-        train_strategy = train_strategy)
     open(joinpath(trial_dir, "train_settings.toml"), "w") do io
         d = Dict{String,Any}(string(f) => getfield(settings, f) for f in fieldnames(TrainSettings))
         d["norm_strategy"]  = strategy_to_dict(norm_strategy)
@@ -98,15 +98,22 @@ for dhidden in dhidden_candidates, nhidden in nhidden_candidates
         TOML.print(io, Dict(string(f) => getfield(model_settings, f) for f in fieldnames(ModelSettings)))
     end
 
-    best_val  = minimum(valid_loss)
-    final_val = last(valid_loss)
-    println("  best valid loss: $best_val  |  time: $(round(elapsed, digits=1))s")
+    trial_best_val = minimum(valid_loss)
+    final_val      = last(valid_loss)
+    println("  best valid loss: $trial_best_val  |  time: $(round(elapsed, digits=1))s")
+
+    # Keep best model in memory
+    if trial_best_val < best_val_global
+        best_val_global     = trial_best_val
+        best_model          = model |> cpu
+        best_model_settings = model_settings
+    end
 
     # Incrementally write this trial to the TOML log
     completed[trial_name] = Dict(
         "dhidden"        => dhidden,
         "nhidden"        => nhidden,
-        "best_val_loss"  => best_val,
+        "best_val_loss"  => trial_best_val,
         "final_val_loss" => final_val,
         "train_seconds"  => round(elapsed, digits=2),
         "timestamp"      => string(now()),
@@ -130,3 +137,26 @@ end
 best_name, best = first(entries)
 println("\nBest: $best_name  dhidden=$(best["dhidden"])  nhidden=$(best["nhidden"])  " *
         "val=$(best["best_val_loss"])  time=$(best["train_seconds"])s")
+
+# ─── Save best model and evaluate all validation trajectories ─────────────────
+if best_model !== nothing
+    best_dir = joinpath(save_dir, "best_model")
+    mkpath(best_dir)
+
+    jldsave(joinpath(best_dir, "model.jld2");
+        model          = best_model,
+        norm_strategy  = norm_strategy,
+        train_strategy = train_strategy)
+
+    winning_dir = joinpath(save_dir, best_name)
+    cp(joinpath(winning_dir, "train_settings.toml"), joinpath(best_dir, "train_settings.toml"); force=true)
+    cp(joinpath(winning_dir, "model_settings.toml"), joinpath(best_dir, "model_settings.toml"); force=true)
+
+    println("\nBest model saved to: $best_dir")
+
+    println("Evaluating all validation trajectories...")
+    eval_dir = joinpath(best_dir, "validation")
+    evaluate_all_trajectories(valid_path, best_model |> device, eval_dir, norm_strategy)
+else
+    println("\nAll trials were skipped (already completed). Re-run without the log file to retrain.")
+end
