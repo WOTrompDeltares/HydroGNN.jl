@@ -1,5 +1,6 @@
 using GraphNeuralNetworks
 using JLD2
+using TOML
 using Statistics
 using Flux: onehotbatch
 
@@ -91,4 +92,16 @@ function evaluate_all_trajectories(data_file::String, model, output_dir::String,
     end
 
     println("\nEvaluation complete. All movies saved to: $output_dir")
+end
+
+function load_run(model_dir::String)
+    d              = JLD2.load(joinpath(model_dir, "model.jld2"))
+    model          = d["model"]
+    norm_strategy  = d["norm_strategy"]
+    train_strategy = d["train_strategy"]
+
+    train_settings = train_settings_from_toml(TOML.parsefile(joinpath(model_dir, "train_settings.toml")))
+    model_settings = model_settings_from_toml(TOML.parsefile(joinpath(model_dir, "model_settings.toml")))
+
+    return model, model_settings, train_settings, norm_strategy, train_strategy
 end

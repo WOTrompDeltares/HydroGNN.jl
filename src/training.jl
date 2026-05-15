@@ -50,6 +50,13 @@ end
 
 step_schedule!(s::ScheduledPushforward, epoch) = (s.current_nsteps = min(round(Int, s.schedule(epoch)), s.nsteps))
 
+strategy_to_dict(s::SingleStepNoise)      = Dict{String,Any}("name" => "SingleStepNoise",      "scale"       => s.scale)
+strategy_to_dict(::NoNoise)               = Dict{String,Any}("name" => "NoNoise")
+strategy_to_dict(s::MultiStepRollout)     = Dict{String,Any}("name" => "MultiStepRollout",     "nsteps"      => s.nsteps,      "noise_scale" => s.noise_scale)
+strategy_to_dict(s::PushforwardRollout)   = Dict{String,Any}("name" => "PushforwardRollout",   "nsteps"      => s.nsteps,      "noise_scale" => s.noise_scale)
+strategy_to_dict(s::ScheduledRollout)     = Dict{String,Any}("name" => "ScheduledRollout",     "nsteps"      => s.nsteps,      "noise_scale" => s.noise_scale)
+strategy_to_dict(s::ScheduledPushforward) = Dict{String,Any}("name" => "ScheduledPushforward", "nsteps"      => s.nsteps,      "noise_scale" => s.noise_scale)
+
 function compute_loss(strategy::SingleStepNoise, model, batch, device)
     x, y = batch
     noiseless_loss = Flux.mse(model(x), y.x)
@@ -158,15 +165,20 @@ function compute_loss(strategy::ScheduledRollout, model, batch, device)
     return batch_loss, grad[1], noiseless_loss
 end
 
-Base.@kwdef mutable struct TrainSettings
+Base.@kwdef mutable struct ModelSettings
     dhidden::Int = 32
     nhidden::Int = 5
+    skip_connections::Bool = false
+    din::Int = 0
+    dout::Int = 0
+end
+
+Base.@kwdef mutable struct TrainSettings
     nepochs::Int = 250
     lr::Float64 = 3e-3
     lr_final::Float64 = 1e-5
     lr_step::Int = 10
     nbatch::Int = 32
-    skip_connections::Bool = false
     train_data_path::String = "data/wave1d/train.jld2"
     valid_data_path::String = "data/wave1d/valid.jld2"
     model_name::String = "test_run3d"
@@ -218,17 +230,23 @@ function train_model!(model, dl_train, dl_valid, device, settings::TrainSettings
         loss_noiseless[epoch] = noiseless_loss
     end
 
-    model_dir = joinpath(settings.save_dir, settings.model_name)
-    mkpath(model_dir)
-
-    jldsave(joinpath(model_dir, "model.jld2");
-        model          = model |> cpu,
-        norm_strategy  = norm_strategy,
-        train_strategy = train_strategy)
-
-    open(joinpath(model_dir, "settings.toml"), "w") do io
-        TOML.print(io, Dict(string(f) => getfield(settings, f) for f in fieldnames(TrainSettings)))
-    end
-
     return train_loss, loss_noiseless, valid_loss
+end
+
+function train_settings_from_toml(d::Dict)
+    s = TrainSettings()
+    for f in fieldnames(TrainSettings)
+        key = string(f)
+        haskey(d, key) && setfield!(s, f, convert(fieldtype(TrainSettings, f), d[key]))
+    end
+    return s
+end
+
+function model_settings_from_toml(d::Dict)
+    s = ModelSettings()
+    for f in fieldnames(ModelSettings)
+        key = string(f)
+        haskey(d, key) && setfield!(s, f, convert(fieldtype(ModelSettings, f), d[key]))
+    end
+    return s
 end

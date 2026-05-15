@@ -5,6 +5,7 @@ Pkg.activate(".")
 using GraphNeuralNetworks
 using JLD2
 using Statistics
+using TOML
 using CUDA, cuDNN
 using Flux
 using Flux: onehotbatch, DataLoader, relu, swish
@@ -21,18 +22,17 @@ end
 # %%
 
 settings = TrainSettings()
+settings.model_name       = "test_3"
+settings.nepochs          = 200
+settings.nbatch           = 32
+settings.save_dir         = "models/lake1d_surge"
+settings.train_data_path  = "data/lake1d_surge/train.jld2"
+settings.valid_data_path  = "data/lake1d_surge/valid.jld2"
 
-settings.model_name = "test_3"
-settings.skip_connections = true
-settings.nepochs = 200
-settings.nbatch = 32
-settings.dhidden = 16
-settings.nhidden = 5
-settings.save_dir = "models/lake1d_surge"
-
-
-settings.train_data_path = "data/lake1d_surge/train.jld2"
-settings.valid_data_path = "data/lake1d_surge/valid.jld2"
+model_settings = ModelSettings()
+model_settings.skip_connections = true
+model_settings.dhidden          = 16
+model_settings.nhidden          = 5
 
 norm_strategy  = GlobalNorm(compute_norm_stats(settings.train_data_path))  # or: PerTrajectoryNorm()
 train_strategy = SingleStepNoise(3e-2)  # or: NoNoise(), MultiStepRollout(5, 0.0), PushforwardRollout(5, 0.0)
@@ -53,7 +53,9 @@ dl_valid = DataLoader((val_x, val_y), batchsize=settings.nbatch, shuffle=false, 
 din = size(val_x[1].ndata.dynamic, 1) + size(val_x[1].ndata.forcing, 1) + size(val_x[1].ndata.static, 1)
 dout = size(val_y[1].ndata.x, 1)
 
-model = GNN(din, settings.dhidden, dout, settings.nhidden; skip=settings.skip_connections)
+model_settings.din  = din
+model_settings.dout = dout
+model = GNN(model_settings.din, model_settings.dhidden, model_settings.dout, model_settings.nhidden; skip=model_settings.skip_connections)
 
 model(val_x[1])
 
@@ -72,6 +74,21 @@ dl_train = dl_train |> device
 dl_valid = dl_valid |> device
 
 train_loss, loss_noiseless, valid_loss = train_model!(model, dl_train, dl_valid, device, settings, norm_strategy, train_strategy)
+
+jldsave(joinpath(model_dir, "model.jld2");
+    model          = model |> cpu,
+    norm_strategy  = norm_strategy,
+    train_strategy = train_strategy)
+
+open(joinpath(model_dir, "train_settings.toml"), "w") do io
+    d = Dict{String,Any}(string(f) => getfield(settings, f) for f in fieldnames(TrainSettings))
+    d["norm_strategy"]  = strategy_to_dict(norm_strategy)
+    d["train_strategy"] = strategy_to_dict(train_strategy)
+    TOML.print(io, d)
+end
+open(joinpath(model_dir, "model_settings.toml"), "w") do io
+    TOML.print(io, Dict(string(f) => getfield(model_settings, f) for f in fieldnames(ModelSettings)))
+end
 
 # %%
 

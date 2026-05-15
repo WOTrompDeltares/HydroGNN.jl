@@ -60,23 +60,43 @@ for dhidden in dhidden_candidates, nhidden in nhidden_candidates
     println("\n=== Trial: $trial_name ===")
 
     settings = TrainSettings()
-    settings.dhidden          = dhidden
-    settings.nhidden          = nhidden
     settings.nepochs          = 100
     settings.nbatch           = 32
-    settings.skip_connections = true
     settings.train_data_path  = train_path
     settings.valid_data_path  = valid_path
     settings.model_name       = trial_name
     settings.save_dir         = save_dir
 
+    model_settings = ModelSettings()
+    model_settings.dhidden          = dhidden
+    model_settings.nhidden          = nhidden
+    model_settings.skip_connections = true
+    model_settings.din              = din
+    model_settings.dout             = dout
+
     dl_train = make_dl_train(settings.nbatch) |> device
-    model    = GNN(din, dhidden, dout, nhidden; skip=settings.skip_connections) |> device
+    model    = GNN(model_settings.din, model_settings.dhidden, model_settings.dout, model_settings.nhidden; skip=model_settings.skip_connections) |> device
 
     t_start = time()
     _, _, valid_loss = train_model!(model, dl_train, dl_valid, device, settings,
                                     norm_strategy, train_strategy)
     elapsed = time() - t_start
+
+    trial_dir = joinpath(save_dir, trial_name)
+    mkpath(trial_dir)
+    jldsave(joinpath(trial_dir, "model.jld2");
+        model          = model |> cpu,
+        norm_strategy  = norm_strategy,
+        train_strategy = train_strategy)
+    open(joinpath(trial_dir, "train_settings.toml"), "w") do io
+        d = Dict{String,Any}(string(f) => getfield(settings, f) for f in fieldnames(TrainSettings))
+        d["norm_strategy"]  = strategy_to_dict(norm_strategy)
+        d["train_strategy"] = strategy_to_dict(train_strategy)
+        TOML.print(io, d)
+    end
+    open(joinpath(trial_dir, "model_settings.toml"), "w") do io
+        TOML.print(io, Dict(string(f) => getfield(model_settings, f) for f in fieldnames(ModelSettings)))
+    end
 
     best_val  = minimum(valid_loss)
     final_val = last(valid_loss)

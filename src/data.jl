@@ -17,6 +17,9 @@ end
 
 struct PerTrajectoryNorm <: NormStrategy end
 
+strategy_to_dict(::GlobalNorm)       = Dict{String,Any}("name" => "GlobalNorm")
+strategy_to_dict(::PerTrajectoryNorm) = Dict{String,Any}("name" => "PerTrajectoryNorm")
+
 function compute_norm_stats(fn)
     # Accumulate sum, sum-of-squares and count per feature across all trajectories and timesteps
     s1 = nothing
