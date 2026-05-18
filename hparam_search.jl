@@ -29,14 +29,14 @@ train_strategy = SingleStepNoise(3e-2)   # or: NoNoise(), MultiStepRollout(5, 0.
 # Pre-load data once — shared across all trials
 if train_strategy isa RolloutStrategy
     train_x       = load_data_multistep(train_path, norm_strategy, train_strategy.nsteps)
-    make_dl_train = nbatch -> DataLoader(train_x, batchsize=1, shuffle=true, collate=false)
+    make_dl_train = nbatch -> DataLoader(train_x, batchsize=1, shuffle=true, collate=false, parallel=true)
 else
     train_x, train_y = load_data(train_path, norm_strategy)
-    make_dl_train    = nbatch -> DataLoader((train_x, train_y), batchsize=nbatch, shuffle=true, collate=true)
+    make_dl_train    = nbatch -> DataLoader((train_x, train_y), batchsize=nbatch, shuffle=true, collate=true, parallel=true)
 end
 
 val_x, val_y = load_data(valid_path, norm_strategy)
-dl_valid     = DataLoader((val_x, val_y), batchsize=32, shuffle=false, collate=true) |> device
+dl_valid     = DataLoader((val_x, val_y), batchsize=32, shuffle=false, collate=true, parallel=true) |> device
 
 din  = size(val_x[1].ndata.dynamic, 1) + size(val_x[1].ndata.forcing, 1) + size(val_x[1].ndata.static, 1)
 dout = size(val_y[1].ndata.x, 1)
