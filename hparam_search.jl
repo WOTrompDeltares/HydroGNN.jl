@@ -46,11 +46,11 @@ dhidden_candidates = [16, 32, 64, 128]
 nhidden_candidates = [2, 3, 5, 8]
 
 # ─── Load existing log to skip completed trials ───────────────────────────────
-completed = isfile(log_file) ? TOML.parsefile(log_file) : Dict{String, Any}()
+global completed = isfile(log_file) ? TOML.parsefile(log_file) : Dict{String, Any}()
 
-best_model          = nothing
-best_model_settings = nothing
-best_val_global     = Inf
+global best_model          = nothing
+global best_model_settings = nothing
+global best_val_global     = Inf
 
 # ─── Trial loop ───────────────────────────────────────────────────────────────
 for dhidden in dhidden_candidates, nhidden in nhidden_candidates
@@ -104,9 +104,9 @@ for dhidden in dhidden_candidates, nhidden in nhidden_candidates
 
     # Keep best model in memory
     if trial_best_val < best_val_global
-        best_val_global     = trial_best_val
-        best_model          = model |> cpu
-        best_model_settings = model_settings
+        global best_val_global     = trial_best_val
+        global best_model          = model |> cpu
+        global best_model_settings = model_settings
     end
 
     # Incrementally write this trial to the TOML log
@@ -156,7 +156,7 @@ if best_model !== nothing
 
     println("Evaluating all validation trajectories...")
     eval_dir = joinpath(best_dir, "validation")
-    evaluate_all_trajectories(valid_path, best_model |> device, eval_dir, norm_strategy)
+    evaluate_all_trajectories(valid_path, best_model, eval_dir, norm_strategy)
 else
     println("\nAll trials were skipped (already completed). Re-run without the log file to retrain.")
 end

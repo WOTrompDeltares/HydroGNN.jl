@@ -35,18 +35,19 @@ model_settings.dhidden          = 16
 model_settings.nhidden          = 5
 
 norm_strategy  = GlobalNorm(compute_norm_stats(settings.train_data_path))  # or: PerTrajectoryNorm()
-train_strategy = SingleStepNoise(3e-2)  # or: NoNoise(), MultiStepRollout(5, 0.0), PushforwardRollout(5, 0.0)
+# train_strategy = SingleStepNoise(3e-2)  # or: NoNoise(), MultiStepRollout(5, 0.0), PushforwardRollout(5, 0.0)
+train_strategy = PushforwardRollout(3, 0.0)
 
 val_x, val_y = load_data(settings.valid_data_path, norm_strategy)
 
 if train_strategy isa RolloutStrategy
     train_x = load_data_multistep(settings.train_data_path, norm_strategy, train_strategy.nsteps)
-    dl_train = DataLoader(train_x, batchsize=1, shuffle=true, collate=false)
+    dl_train = DataLoader(train_x, batchsize=-1, shuffle=true, collate=false, parallel=true)
 else
     train_x, train_y = load_data(settings.train_data_path, norm_strategy)
-    dl_train = DataLoader((train_x, train_y), batchsize=settings.nbatch, shuffle=true, collate=true)
+    dl_train = DataLoader((train_x, train_y), batchsize=settings.nbatch, shuffle=true, collate=true, parallel=true)
 end
-dl_valid = DataLoader((val_x, val_y), batchsize=settings.nbatch, shuffle=false, collate=true)
+dl_valid = DataLoader((val_x, val_y), batchsize=settings.nbatch, shuffle=false, collate=true, parallel=true)
 
 # %%
 
