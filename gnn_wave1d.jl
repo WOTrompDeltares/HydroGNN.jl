@@ -22,8 +22,8 @@ end
 # %%
 
 settings = TrainSettings()
-settings.model_name       = "test_3"
-settings.nepochs          = 200
+settings.model_name       = "test_gpu_rollout"
+settings.nepochs          = 5
 settings.nbatch           = 32
 settings.save_dir         = "models/lake1d_surge"
 settings.train_data_path  = "data/lake1d_surge/train.jld2"
@@ -35,8 +35,8 @@ model_settings.dhidden          = 16
 model_settings.nhidden          = 5
 
 norm_strategy  = GlobalNorm(compute_norm_stats(settings.train_data_path))  # or: PerTrajectoryNorm()
-# train_strategy = SingleStepNoise(3e-2)  # or: NoNoise(), MultiStepRollout(5, 0.0), PushforwardRollout(5, 0.0)
-train_strategy = PushforwardRollout(3, 0.0)
+train_strategy = SingleStepNoise(3e-2)  # or: NoNoise(), MultiStepRollout(5, 0.0), PushforwardRollout(5, 0.0)
+# train_strategy = PushforwardRollout(3, 0.0)
 
 val_x, val_y = load_data(settings.valid_data_path, norm_strategy)
 
@@ -98,4 +98,4 @@ plot_loss(train_loss, loss_noiseless, valid_loss, joinpath(model_dir, "loss_plot
 
 # %%
 
-evaluate_all_trajectories(settings.valid_data_path, model |> cpu, model_dir, norm_strategy)
+evaluate_all_trajectories(settings.valid_data_path, model, model_dir, norm_strategy; device=device)

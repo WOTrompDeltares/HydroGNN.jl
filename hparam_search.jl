@@ -156,7 +156,7 @@ if best_model !== nothing
 
     println("Evaluating all validation trajectories...")
     eval_dir = joinpath(best_dir, "validation")
-    evaluate_all_trajectories(valid_path, best_model, eval_dir, norm_strategy)
+    evaluate_all_trajectories(valid_path, best_model, eval_dir, norm_strategy; device=device)
 else
     println("\nAll trials were skipped (already completed). Re-run without the log file to retrain.")
 end
