@@ -18,7 +18,7 @@ end
 # ─── Fixed configuration ──────────────────────────────────────────────────────
 train_path = "data/lake1d_surge/train.jld2"
 valid_path  = "data/lake1d_surge/valid.jld2"
-save_dir    = "models/hparam_search"
+save_dir    = "models/hparam_search_test_run"
 log_file    = joinpath(save_dir, "results.toml")
 
 mkpath(save_dir)
@@ -42,9 +42,10 @@ din  = size(val_x[1].ndata.dynamic, 1) + size(val_x[1].ndata.forcing, 1) + size(
 dout = size(val_y[1].ndata.x, 1)
 
 # ─── Search space ─────────────────────────────────────────────────────────────
-dhidden_candidates = [16, 32, 64, 128]
-nhidden_candidates = [2, 3, 5, 8]
-skip_candidates    = [false, true]
+dhidden_candidates = [16]
+nhidden_candidates = [2]
+skip_candidates    = [false]
+noise_candidates   = [1e-2]
 
 # ─── Load existing log to skip completed trials ───────────────────────────────
 global completed = isfile(log_file) ? TOML.parsefile(log_file) : Dict{String, Any}()
@@ -54,8 +55,8 @@ global best_model_settings = nothing
 global best_val_global     = Inf
 
 # ─── Trial loop ───────────────────────────────────────────────────────────────
-for dhidden in dhidden_candidates, nhidden in nhidden_candidates, skip in skip_candidates
-    trial_name = "dh$(dhidden)_nh$(nhidden)_skip$(skip)"
+for dhidden in dhidden_candidates, nhidden in nhidden_candidates, skip in skip_candidates, noise in noise_candidates
+    trial_name = "dh$(dhidden)_nh$(nhidden)_skip$(skip)_ns$(noise)"
 
     if haskey(completed, trial_name)
         @info "Skipping $trial_name (already logged)"
@@ -65,7 +66,7 @@ for dhidden in dhidden_candidates, nhidden in nhidden_candidates, skip in skip_c
     @info "\n=== Trial: $trial_name ==="
 
     settings = TrainSettings()
-    settings.nepochs          = 100
+    settings.nepochs          = 5
     settings.nbatch           = 32
     settings.train_data_path  = train_path
     settings.valid_data_path  = valid_path
@@ -81,10 +82,13 @@ for dhidden in dhidden_candidates, nhidden in nhidden_candidates, skip in skip_c
 
     dl_train = make_dl_train(settings.nbatch) |> device
     model    = GNN(model_settings.din, model_settings.dhidden, model_settings.dout, model_settings.nhidden; skip=model_settings.skip_connections) |> device
+    trial_strategy = iszero(noise) ? NoNoise() : SingleStepNoise(noise)
+    nparams  = sum(length, Flux.trainables(model))
+    @info "  parameters: $nparams"
 
     t_start = time()
     train_loss, loss_noiseless, valid_loss = train_model!(model, dl_train, dl_valid, device, settings,
-                                                          norm_strategy, train_strategy)
+                                                          norm_strategy, trial_strategy)
     elapsed = time() - t_start
 
     trial_dir = joinpath(save_dir, trial_name)
@@ -93,7 +97,7 @@ for dhidden in dhidden_candidates, nhidden in nhidden_candidates, skip in skip_c
     open(joinpath(trial_dir, "train_settings.toml"), "w") do io
         d = Dict{String,Any}(string(f) => getfield(settings, f) for f in fieldnames(TrainSettings))
         d["norm_strategy"]  = strategy_to_dict(norm_strategy)
-        d["train_strategy"] = strategy_to_dict(train_strategy)
+        d["train_strategy"] = strategy_to_dict(trial_strategy)
         TOML.print(io, d)
     end
     open(joinpath(trial_dir, "model_settings.toml"), "w") do io
@@ -116,6 +120,8 @@ for dhidden in dhidden_candidates, nhidden in nhidden_candidates, skip in skip_c
         "dhidden"          => dhidden,
         "nhidden"          => nhidden,
         "skip_connections" => skip,
+        "noise_scale"      => noise,
+        "nparams"          => nparams,
         "best_val_loss"    => trial_best_val,
         "final_val_loss"   => final_val,
         "train_seconds"    => round(elapsed, digits=2),
@@ -130,16 +136,19 @@ end
 entries = sort(collect(completed), by = kv -> kv[2]["best_val_loss"])
 
 @info "\n=== Results (sorted by best validation loss) ==="
-@info rpad("trial", 28) * rpad("dhidden", 10) * rpad("nhidden", 10) *
-      rpad("skip", 8) * rpad("best_val", 14) * "time (s)"
+@info rpad("trial", 38) * rpad("dh", 6) * rpad("nh", 6) * rpad("skip", 8) *
+      rpad("noise", 8) * rpad("nparams", 10) * rpad("best_val", 14) * "time (s)"
 for (name, r) in entries
-    @info rpad(name, 28) * rpad(r["dhidden"], 10) * rpad(r["nhidden"], 10) *
-          rpad(r["skip_connections"], 8) * rpad(round(r["best_val_loss"], sigdigits=5), 14) * r["train_seconds"]
+    @info rpad(name, 38) * rpad(r["dhidden"], 6) * rpad(r["nhidden"], 6) *
+          rpad(r["skip_connections"], 8) * rpad(r["noise_scale"], 8) *
+          rpad(r["nparams"], 10) * rpad(round(r["best_val_loss"], sigdigits=5), 14) *
+          string(r["train_seconds"])
 end
 
 best_name, best = first(entries)
-@info "\nBest: $best_name  dhidden=$(best["dhidden"])  nhidden=$(best["nhidden"])  " *
-        "skip=$(best["skip_connections"])  val=$(best["best_val_loss"])  time=$(best["train_seconds"])s"
+@info "Best: $best_name  dh=$(best["dhidden"])  nh=$(best["nhidden"])  " *
+      "skip=$(best["skip_connections"])  noise=$(best["noise_scale"])  " *
+      "params=$(best["nparams"])  val=$(best["best_val_loss"])  time=$(best["train_seconds"])s"
 
 # ─── Save best model and evaluate all validation trajectories ─────────────────
 if best_model !== nothing
