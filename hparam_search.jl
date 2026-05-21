@@ -44,6 +44,7 @@ dout = size(val_y[1].ndata.x, 1)
 # ─── Search space ─────────────────────────────────────────────────────────────
 dhidden_candidates = [16, 32, 64, 128]
 nhidden_candidates = [2, 3, 5, 8]
+skip_candidates    = [false, true]
 
 # ─── Load existing log to skip completed trials ───────────────────────────────
 global completed = isfile(log_file) ? TOML.parsefile(log_file) : Dict{String, Any}()
@@ -53,15 +54,15 @@ global best_model_settings = nothing
 global best_val_global     = Inf
 
 # ─── Trial loop ───────────────────────────────────────────────────────────────
-for dhidden in dhidden_candidates, nhidden in nhidden_candidates
-    trial_name = "dh$(dhidden)_nh$(nhidden)"
+for dhidden in dhidden_candidates, nhidden in nhidden_candidates, skip in skip_candidates
+    trial_name = "dh$(dhidden)_nh$(nhidden)_skip$(skip)"
 
     if haskey(completed, trial_name)
-        println("Skipping $trial_name (already logged)")
+        @info "Skipping $trial_name (already logged)"
         continue
     end
 
-    println("\n=== Trial: $trial_name ===")
+    @info "\n=== Trial: $trial_name ==="
 
     settings = TrainSettings()
     settings.nepochs          = 100
@@ -74,7 +75,7 @@ for dhidden in dhidden_candidates, nhidden in nhidden_candidates
     model_settings = ModelSettings()
     model_settings.dhidden          = dhidden
     model_settings.nhidden          = nhidden
-    model_settings.skip_connections = true
+    model_settings.skip_connections = skip
     model_settings.din              = din
     model_settings.dout             = dout
 
@@ -82,12 +83,13 @@ for dhidden in dhidden_candidates, nhidden in nhidden_candidates
     model    = GNN(model_settings.din, model_settings.dhidden, model_settings.dout, model_settings.nhidden; skip=model_settings.skip_connections) |> device
 
     t_start = time()
-    _, _, valid_loss = train_model!(model, dl_train, dl_valid, device, settings,
-                                    norm_strategy, train_strategy)
+    train_loss, loss_noiseless, valid_loss = train_model!(model, dl_train, dl_valid, device, settings,
+                                                          norm_strategy, train_strategy)
     elapsed = time() - t_start
 
     trial_dir = joinpath(save_dir, trial_name)
     mkpath(trial_dir)
+    plot_loss(train_loss, loss_noiseless, valid_loss, joinpath(trial_dir, "loss_plot.png"))
     open(joinpath(trial_dir, "train_settings.toml"), "w") do io
         d = Dict{String,Any}(string(f) => getfield(settings, f) for f in fieldnames(TrainSettings))
         d["norm_strategy"]  = strategy_to_dict(norm_strategy)
@@ -100,7 +102,7 @@ for dhidden in dhidden_candidates, nhidden in nhidden_candidates
 
     trial_best_val = minimum(valid_loss)
     final_val      = last(valid_loss)
-    println("  best valid loss: $trial_best_val  |  time: $(round(elapsed, digits=1))s")
+    @info "  best valid loss: $trial_best_val  |  time: $(round(elapsed, digits=1))s"
 
     # Keep best model in memory
     if trial_best_val < best_val_global
@@ -111,12 +113,13 @@ for dhidden in dhidden_candidates, nhidden in nhidden_candidates
 
     # Incrementally write this trial to the TOML log
     completed[trial_name] = Dict(
-        "dhidden"        => dhidden,
-        "nhidden"        => nhidden,
-        "best_val_loss"  => trial_best_val,
-        "final_val_loss" => final_val,
-        "train_seconds"  => round(elapsed, digits=2),
-        "timestamp"      => string(now()),
+        "dhidden"          => dhidden,
+        "nhidden"          => nhidden,
+        "skip_connections" => skip,
+        "best_val_loss"    => trial_best_val,
+        "final_val_loss"   => final_val,
+        "train_seconds"    => round(elapsed, digits=2),
+        "timestamp"        => string(now()),
     )
     open(log_file, "w") do io
         TOML.print(io, completed)
@@ -126,17 +129,17 @@ end
 # ─── Report ───────────────────────────────────────────────────────────────────
 entries = sort(collect(completed), by = kv -> kv[2]["best_val_loss"])
 
-println("\n=== Results (sorted by best validation loss) ===")
-println(rpad("trial", 20), rpad("dhidden", 10), rpad("nhidden", 10),
-        rpad("best_val", 14), "time (s)")
+@info "\n=== Results (sorted by best validation loss) ==="
+@info rpad("trial", 28) * rpad("dhidden", 10) * rpad("nhidden", 10) *
+      rpad("skip", 8) * rpad("best_val", 14) * "time (s)"
 for (name, r) in entries
-    println(rpad(name, 20), rpad(r["dhidden"], 10), rpad(r["nhidden"], 10),
-            rpad(round(r["best_val_loss"], sigdigits=5), 14), r["train_seconds"])
+    @info rpad(name, 28) * rpad(r["dhidden"], 10) * rpad(r["nhidden"], 10) *
+          rpad(r["skip_connections"], 8) * rpad(round(r["best_val_loss"], sigdigits=5), 14) * r["train_seconds"]
 end
 
 best_name, best = first(entries)
-println("\nBest: $best_name  dhidden=$(best["dhidden"])  nhidden=$(best["nhidden"])  " *
-        "val=$(best["best_val_loss"])  time=$(best["train_seconds"])s")
+@info "\nBest: $best_name  dhidden=$(best["dhidden"])  nhidden=$(best["nhidden"])  " *
+        "skip=$(best["skip_connections"])  val=$(best["best_val_loss"])  time=$(best["train_seconds"])s"
 
 # ─── Save best model and evaluate all validation trajectories ─────────────────
 if best_model !== nothing
@@ -152,11 +155,11 @@ if best_model !== nothing
     cp(joinpath(winning_dir, "train_settings.toml"), joinpath(best_dir, "train_settings.toml"); force=true)
     cp(joinpath(winning_dir, "model_settings.toml"), joinpath(best_dir, "model_settings.toml"); force=true)
 
-    println("\nBest model saved to: $best_dir")
+    @info "\nBest model saved to: $best_dir"
 
-    println("Evaluating all validation trajectories...")
+    @info "Evaluating all validation trajectories..."
     eval_dir = joinpath(best_dir, "validation")
     evaluate_all_trajectories(valid_path, best_model, eval_dir, norm_strategy; device=device)
 else
-    println("\nAll trials were skipped (already completed). Re-run without the log file to retrain.")
+    @info "\nAll trials were skipped (already completed). Re-run without the log file to retrain."
 end
