@@ -89,7 +89,9 @@ function compute_loss(strategy::MultiStepRollout, model, batch, device)
             if strategy.noise_scale > 0
                 dyn_cur = dyn_cur .+ (Float32(strategy.noise_scale) .* randn(Float32, size(dyn_cur)) |> device)
             end
-            g_k = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
+            g_k = Flux.ignore_derivatives() do
+                GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
+            end
             yhat_k = m(g_k)
             total_loss += Flux.mse(yhat_k, x_seq[k+1].ndata.dynamic)
             dyn_cur = yhat_k
@@ -155,7 +157,9 @@ function compute_loss(strategy::ScheduledRollout, model, batch, device)
             if strategy.noise_scale > 0
                 dyn_cur = dyn_cur .+ (Float32(strategy.noise_scale) .* randn(Float32, size(dyn_cur)) |> device)
             end
-            g_k = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
+            g_k = Flux.ignore_derivatives() do
+                GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
+            end
             yhat_k = m(g_k)
             total_loss += Flux.mse(yhat_k, x_seq[k+1].ndata.dynamic)
             dyn_cur = yhat_k
