@@ -87,9 +87,7 @@ open(joinpath(model_dir, "train_settings.toml"), "w") do io
     d["train_strategy"] = strategy_to_dict(train_strategy)
     TOML.print(io, d)
 end
-open(joinpath(model_dir, "model_settings.toml"), "w") do io
-    TOML.print(io, Dict(string(f) => getfield(model_settings, f) for f in fieldnames(ModelSettings)))
-end
+save_model_settings(model_settings, joinpath(model_dir, "model_settings.toml"))
 
 # %%
 

@@ -114,7 +114,7 @@ function load_run(model_dir::String)
     train_strategy = d["train_strategy"]
 
     train_settings = train_settings_from_toml(TOML.parsefile(joinpath(model_dir, "train_settings.toml")))
-    model_settings = model_settings_from_toml(TOML.parsefile(joinpath(model_dir, "model_settings.toml")))
+    model_settings = load_model_settings(joinpath(model_dir, "model_settings.toml"))
 
     return model, model_settings, train_settings, norm_strategy, train_strategy
 end

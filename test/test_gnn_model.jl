@@ -31,12 +31,10 @@ end
     ms.dhidden = 16; ms.nhidden = 3; ms.skip_connections = true; ms.din = 10; ms.dout = 2
 
     toml_path = joinpath(TMPDIR, "model_settings.toml")
-    open(toml_path, "w") do io
-        TOML.print(io, Dict(string(f) => getfield(ms, f) for f in fieldnames(ModelSettings)))
-    end
+    save_model_settings(ms, toml_path)
     @test isfile(toml_path)
 
-    ms2 = model_settings_from_toml(TOML.parsefile(toml_path))
+    ms2 = load_model_settings(toml_path)
     @test ms2.dhidden          == ms.dhidden
     @test ms2.nhidden          == ms.nhidden
     @test ms2.skip_connections == ms.skip_connections

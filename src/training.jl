@@ -165,14 +165,6 @@ function compute_loss(strategy::ScheduledRollout, model, batch, device)
     return batch_loss, grad[1], noiseless_loss
 end
 
-Base.@kwdef mutable struct ModelSettings
-    dhidden::Int = 32
-    nhidden::Int = 5
-    skip_connections::Bool = false
-    din::Int = 0
-    dout::Int = 0
-end
-
 Base.@kwdef mutable struct TrainSettings
     nepochs::Int = 250
     lr::Float64 = 3e-3
@@ -238,15 +230,6 @@ function train_settings_from_toml(d::Dict)
     for f in fieldnames(TrainSettings)
         key = string(f)
         haskey(d, key) && setfield!(s, f, convert(fieldtype(TrainSettings, f), d[key]))
-    end
-    return s
-end
-
-function model_settings_from_toml(d::Dict)
-    s = ModelSettings()
-    for f in fieldnames(ModelSettings)
-        key = string(f)
-        haskey(d, key) && setfield!(s, f, convert(fieldtype(ModelSettings, f), d[key]))
     end
     return s
 end

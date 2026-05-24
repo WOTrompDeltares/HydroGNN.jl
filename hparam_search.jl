@@ -100,9 +100,7 @@ for dhidden in dhidden_candidates, nhidden in nhidden_candidates, skip in skip_c
         d["train_strategy"] = strategy_to_dict(trial_strategy)
         TOML.print(io, d)
     end
-    open(joinpath(trial_dir, "model_settings.toml"), "w") do io
-        TOML.print(io, Dict(string(f) => getfield(model_settings, f) for f in fieldnames(ModelSettings)))
-    end
+    save_model_settings(model_settings, joinpath(trial_dir, "model_settings.toml"))
 
     trial_best_val = minimum(valid_loss)
     final_val      = last(valid_loss)
