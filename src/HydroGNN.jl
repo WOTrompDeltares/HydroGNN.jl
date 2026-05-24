@@ -10,7 +10,8 @@ export GNN
 include("training.jl")
 export ModelSettings, TrainSettings, train_model!,
        TrainStrategy, RolloutStrategy, SingleStepNoise, NoNoise,
-       MultiStepRollout, PushforwardRollout, ScheduledRollout, ScheduledPushforward
+       MultiStepRollout, PushforwardRollout, ScheduledRollout, ScheduledPushforward,
+       model_settings_from_toml, train_settings_from_toml
 
 include("plot.jl")
 export plot_loss, movie_graphs, movie_graphs_comp

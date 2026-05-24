@@ -139,7 +139,8 @@ D_center=Float32.(depth_profile(grid_h, D_min, D_max, D_edges, D_widths))
 W=100.0 # width
 C=60.0 # Chezy friction factor
 
-datadir = "data/lake1d_surge"
+# datadir = "data/lake1d_surge"
+datadir = "test_data/lake1d_surge"
 if !isdir(datadir)
     mkpath(datadir)
 end
@@ -149,7 +150,8 @@ val_frac = 0.2
 
 # time span
 t_start=0.0
-t_end=6*3600.0 # hours
+# t_end=6*3600.0 # hours
+t_end = 900
 
 # cfl_out = 1.0
 # dt_out = cfl_out*f.dx/(sqrt(maximum(f.D)*f.g))
@@ -162,17 +164,22 @@ x_u = grid_u
 x=ComponentVector(h=x_h,u=x_u)
 
 # ini_pos = 0.25:0.01:0.75
-ini_amp = 0.1:0.05:1
-ini_period = 0.25:0.25:2.0
+# ini_amp = 0.1:0.05:1
+# ini_period = 0.25:0.25:2.0
+ini_amp = 0.1:0.25:1.0
+ini_period = 0.5:0.5:0.5
 n_traj = length(Iterators.product(ini_amp, ini_period))
 
 # This makes a symmetric train data set
 # Val, test sets are not necessarily symmetric
-train_inds = sample(rng, 1:n_traj÷2, floor(Int, train_frac*n_traj/2), replace=false)
-train_inds = vcat(train_inds, (n_traj+1).-train_inds)
-rem_inds = setdiff(1:n_traj, train_inds)
-val_inds = sample(rng, rem_inds, floor(Int, length(rem_inds)*val_frac/(1-train_frac)), replace=false)
-test_inds = setdiff(rem_inds, val_inds)
+# train_inds = sample(rng, 1:n_traj÷2, floor(Int, train_frac*n_traj/2), replace=false)
+# train_inds = vcat(train_inds, (n_traj+1).-train_inds)
+# rem_inds = setdiff(1:n_traj, train_inds)
+# val_inds = sample(rng, rem_inds, floor(Int, length(rem_inds)*val_frac/(1-train_frac)), replace=false)
+# test_inds = setdiff(rem_inds, val_inds)
+train_inds = collect(1:n_traj)
+val_inds = []
+test_inds = []
 
 # Create mesh_pos array to be saved to tfrecord
 # This uses staggered grid, we will interpolate everything to the waterlevel grid
