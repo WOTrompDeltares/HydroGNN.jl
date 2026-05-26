@@ -164,22 +164,22 @@ x_u = grid_u
 x=ComponentVector(h=x_h,u=x_u)
 
 # ini_pos = 0.25:0.01:0.75
-# ini_amp = 0.1:0.05:1
-# ini_period = 0.25:0.25:2.0
-ini_amp = 0.1:0.25:1.0
-ini_period = 0.5:0.5:0.5
+ini_amp = 0.1:0.05:1
+ini_period = 0.25:0.25:2.0
+# ini_amp = 0.1:0.25:1.0
+# ini_period = 0.5:0.5:0.5
 n_traj = length(Iterators.product(ini_amp, ini_period))
 
 # This makes a symmetric train data set
 # Val, test sets are not necessarily symmetric
-# train_inds = sample(rng, 1:n_traj÷2, floor(Int, train_frac*n_traj/2), replace=false)
-# train_inds = vcat(train_inds, (n_traj+1).-train_inds)
-# rem_inds = setdiff(1:n_traj, train_inds)
-# val_inds = sample(rng, rem_inds, floor(Int, length(rem_inds)*val_frac/(1-train_frac)), replace=false)
-# test_inds = setdiff(rem_inds, val_inds)
-train_inds = collect(1:n_traj)
-val_inds = []
-test_inds = []
+train_inds = sample(rng, 1:n_traj÷2, floor(Int, train_frac*n_traj/2), replace=false)
+train_inds = vcat(train_inds, (n_traj+1).-train_inds)
+rem_inds = setdiff(1:n_traj, train_inds)
+val_inds = sample(rng, rem_inds, floor(Int, length(rem_inds)*val_frac/(1-train_frac)), replace=false)
+test_inds = setdiff(rem_inds, val_inds)
+# train_inds = collect(1:n_traj)
+# val_inds = []
+# test_inds = []
 
 # Create mesh_pos array to be saved to tfrecord
 # This uses staggered grid, we will interpolate everything to the waterlevel grid
