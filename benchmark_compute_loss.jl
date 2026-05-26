@@ -85,7 +85,9 @@ end
 
 strategies = [
     ("NoNoise",                           NoNoise(),                            dl_ss),
+    ("SingleStepNoise(σ=0.01)",           SingleStepNoise(0.01),                dl_ss),
     ("PushforwardRollout(n=$NSTEPS_PFR)", PushforwardRollout(NSTEPS_PFR, 0.0), dl_ms),
+    ("MultiStepRollout(n=$NSTEPS_PFR)",   MultiStepRollout(NSTEPS_PFR, 0.0),   dl_ms),
 ]
 
 results = NamedTuple{(:label,:median_s,:std_s,:mean_loss)}[]

@@ -2,7 +2,7 @@ using Test
 using HydroGNN
 using Statistics
 
-const NORM_TEST_DATA = joinpath(@__DIR__, "..", "data", "lake1d_surge", "train.jld2")
+const NORM_TEST_DATA = joinpath(@__DIR__, "..", "test_data", "lake1d_surge", "train.jld2")
 
 @testset "DynamicNormStats construction" begin
     stats = DynamicNormStats(Float32[1.0, 2.0], Float32[0.5, 1.0])
