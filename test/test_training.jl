@@ -259,3 +259,108 @@ end
     @test loss2 >= 0
     @test grad2 !== nothing
 end
+
+# ─── save/load TrainStrategy ──────────────────────────────────────────────────
+
+const STRAT_TMPDIR = mktempdir()
+
+@testset "save/load TrainStrategy: NoNoise" begin
+    s = NoNoise()
+    p = joinpath(STRAT_TMPDIR, "nonoise.toml")
+    save_train_strategy(s, p)
+    @test isfile(p)
+    s2 = load_train_strategy(p)
+    @test s2 isa NoNoise
+end
+
+@testset "save/load TrainStrategy: SingleStepNoise" begin
+    s  = SingleStepNoise(0.05)
+    p  = joinpath(STRAT_TMPDIR, "ssn.toml")
+    save_train_strategy(s, p)
+    s2 = load_train_strategy(p)
+    @test s2 isa SingleStepNoise
+    @test s2.scale ≈ 0.05
+end
+
+@testset "save/load TrainStrategy: MultiStepRollout" begin
+    s  = MultiStepRollout(3, 0.02)
+    p  = joinpath(STRAT_TMPDIR, "msr.toml")
+    save_train_strategy(s, p)
+    s2 = load_train_strategy(p)
+    @test s2 isa MultiStepRollout
+    @test s2.nsteps      == 3
+    @test s2.noise_scale ≈  0.02
+end
+
+@testset "save/load TrainStrategy: PushforwardRollout" begin
+    s  = PushforwardRollout(4, 0.01)
+    p  = joinpath(STRAT_TMPDIR, "pfr.toml")
+    save_train_strategy(s, p)
+    s2 = load_train_strategy(p)
+    @test s2 isa PushforwardRollout
+    @test s2.nsteps      == 4
+    @test s2.noise_scale ≈  0.01
+end
+
+@testset "save/load TrainStrategy: ScheduledRollout restores identity schedule" begin
+    s  = ScheduledRollout(identity, 5, 0.0)
+    p  = joinpath(STRAT_TMPDIR, "sr.toml")
+    save_train_strategy(s, p)
+    s2 = load_train_strategy(p)
+    @test s2 isa ScheduledRollout
+    @test s2.nsteps      == 5
+    @test s2.noise_scale ≈  0.0
+    @test s2.schedule    == identity
+end
+
+@testset "save/load TrainStrategy: ScheduledPushforward restores identity schedule" begin
+    s  = ScheduledPushforward(identity, 6, 0.03)
+    p  = joinpath(STRAT_TMPDIR, "sp.toml")
+    save_train_strategy(s, p)
+    s2 = load_train_strategy(p)
+    @test s2 isa ScheduledPushforward
+    @test s2.nsteps      == 6
+    @test s2.noise_scale ≈  0.03
+    @test s2.schedule    == identity
+end
+
+@testset "load_train_strategy: unknown name errors" begin
+    p = joinpath(STRAT_TMPDIR, "bad.toml")
+    write(p, "name = \"Bogus\"\n")
+    @test_throws ErrorException load_train_strategy(p)
+end
+
+# ─── Base.show for TrainStrategy ─────────────────────────────────────────────
+
+@testset "show compact: NoNoise" begin
+    @test sprint(show, NoNoise()) == "NoNoise()"
+end
+
+@testset "show compact: SingleStepNoise" begin
+    s = SingleStepNoise(0.1)
+    @test occursin("SingleStepNoise", sprint(show, s))
+    @test occursin("0.1",             sprint(show, s))
+end
+
+@testset "show compact: MultiStepRollout" begin
+    s   = MultiStepRollout(3, 0.02)
+    str = sprint(show, s)
+    @test occursin("MultiStepRollout", str)
+    @test occursin("3",    str)
+    @test occursin("0.02", str)
+end
+
+@testset "show text/plain: fields appear" begin
+    s   = PushforwardRollout(2, 0.05)
+    str = sprint(show, MIME("text/plain"), s)
+    @test occursin("PushforwardRollout", str)
+    @test occursin("nsteps",             str)
+    @test occursin("noise_scale",        str)
+end
+
+@testset "show text/plain: ScheduledRollout shows current_nsteps" begin
+    s   = ScheduledRollout(identity, 4, 0.0)
+    str = sprint(show, MIME("text/plain"), s)
+    @test occursin("current_nsteps", str)
+    @test occursin("1",              str)   # initial value
+end

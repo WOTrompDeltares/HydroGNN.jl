@@ -29,7 +29,7 @@ train_strategy = SingleStepNoise(3e-2)   # or: NoNoise(), MultiStepRollout(5, 0.
 # Pre-load data once — shared across all trials
 if train_strategy isa RolloutStrategy
     train_x       = load_data_multistep(train_path, norm_strategy, train_strategy.nsteps)
-    make_dl_train = nbatch -> DataLoader(train_x, batchsize=1, shuffle=true, collate=false, parallel=true)
+    make_dl_train = nbatch -> DataLoader(train_x, batchsize=nbatch, shuffle=true, collate=collate_multistep_batch, parallel=true)
 else
     train_x, train_y = load_data(train_path, norm_strategy)
     make_dl_train    = nbatch -> DataLoader((train_x, train_y), batchsize=nbatch, shuffle=true, collate=true, parallel=true)

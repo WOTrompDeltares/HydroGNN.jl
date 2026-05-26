@@ -196,3 +196,20 @@ function load_data_multistep(fn, norm_strategy::NormStrategy, nsteps::Int)
     end
     return data_x
 end
+
+"""
+    collate_multistep_batch(windows)
+
+Custom DataLoader collate function for multistep datasets.
+
+Takes a vector of B windows (each a `Vector{GNNGraph}` of length `nsteps+1`)
+and returns a single `Vector{GNNGraph}` of length `nsteps+1` where each
+element is a batched graph combining all B windows at that step position.
+
+This enables proper GPU utilization by fusing B small graphs into one
+large disconnected graph per step, rather than iterating one window at a time.
+"""
+function collate_multistep_batch(windows::Vector)
+    nsteps_plus1 = length(first(windows))
+    return [batch([windows[b][k] for b in eachindex(windows)]) for k in 1:nsteps_plus1]
+end

@@ -57,6 +57,78 @@ strategy_to_dict(s::PushforwardRollout)   = Dict{String,Any}("name" => "Pushforw
 strategy_to_dict(s::ScheduledRollout)     = Dict{String,Any}("name" => "ScheduledRollout",     "nsteps"      => s.nsteps,      "noise_scale" => s.noise_scale)
 strategy_to_dict(s::ScheduledPushforward) = Dict{String,Any}("name" => "ScheduledPushforward", "nsteps"      => s.nsteps,      "noise_scale" => s.noise_scale)
 
+from_dict(::Type{NoNoise},              d) = NoNoise()
+from_dict(::Type{SingleStepNoise},      d) = SingleStepNoise(d["scale"])
+from_dict(::Type{MultiStepRollout},     d) = MultiStepRollout(d["nsteps"], d["noise_scale"])
+from_dict(::Type{PushforwardRollout},   d) = PushforwardRollout(d["nsteps"], d["noise_scale"])
+from_dict(::Type{ScheduledRollout},     d) = ScheduledRollout(identity, d["nsteps"], d["noise_scale"])
+from_dict(::Type{ScheduledPushforward}, d) = ScheduledPushforward(identity, d["nsteps"], d["noise_scale"])
+
+const _STRATEGY_TYPES = Dict{String,Type{<:TrainStrategy}}(
+    "NoNoise"              => NoNoise,
+    "SingleStepNoise"      => SingleStepNoise,
+    "MultiStepRollout"     => MultiStepRollout,
+    "PushforwardRollout"   => PushforwardRollout,
+    "ScheduledRollout"     => ScheduledRollout,
+    "ScheduledPushforward" => ScheduledPushforward,
+)
+
+function save_train_strategy(s::TrainStrategy, path::String)
+    open(path, "w") do io
+        TOML.print(io, strategy_to_dict(s))
+    end
+end
+
+"""
+    load_train_strategy(path) -> TrainStrategy
+
+Read a TOML file written by `save_train_strategy` and reconstruct the
+corresponding `TrainStrategy`.  For `ScheduledRollout` / `ScheduledPushforward`
+the schedule callable is not serialised; it is restored as `identity` and
+should be reassigned after loading if scheduling is required.
+"""
+function load_train_strategy(path::String)
+    d    = TOML.parsefile(path)
+    name = d["name"]
+    T    = get(_STRATEGY_TYPES, name, nothing)
+    T === nothing && error("Unknown TrainStrategy name: \"$name\"")
+    return from_dict(T, d)
+end
+
+# Compact single-line display:  MultiStepRollout(nsteps=3, noise_scale=0.02)
+function Base.show(io::IO, s::TrainStrategy)
+    d    = strategy_to_dict(s)
+    name = pop!(d, "name")
+    if isempty(d)
+        print(io, name, "()")
+    else
+        print(io, name, "(")
+        pairs = collect(d)
+        for (i, (k, v)) in enumerate(pairs)
+            print(io, k, "=", v)
+            i < length(pairs) && print(io, ", ")
+        end
+        print(io, ")")
+    end
+end
+
+# Multiline REPL display
+function Base.show(io::IO, ::MIME"text/plain", s::TrainStrategy)
+    d    = strategy_to_dict(s)
+    name = pop!(d, "name")
+    if isempty(d)
+        print(io, name, "()")
+    else
+        println(io, name, ":")
+        for (k, v) in d
+            println(io, "  ", rpad(k, 14), " = ", v)
+        end
+        if hasproperty(s, :current_nsteps)
+            print(io, "  ", rpad("current_nsteps", 14), " = ", s.current_nsteps)
+        end
+    end
+end
+
 function compute_loss(strategy::SingleStepNoise, model, batch, device)
     x, y = batch
     noiseless_loss = Flux.mse(model(x), y.x)

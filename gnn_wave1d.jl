@@ -42,7 +42,7 @@ val_x, val_y = load_data(settings.valid_data_path, norm_strategy)
 
 if train_strategy isa RolloutStrategy
     train_x = load_data_multistep(settings.train_data_path, norm_strategy, train_strategy.nsteps)
-    dl_train = DataLoader(train_x, batchsize=-1, shuffle=true, collate=false, parallel=true)
+    dl_train = DataLoader(train_x, batchsize=settings.nbatch, shuffle=true, collate=collate_multistep_batch, parallel=true)
 else
     train_x, train_y = load_data(settings.train_data_path, norm_strategy)
     dl_train = DataLoader((train_x, train_y), batchsize=settings.nbatch, shuffle=true, collate=true, parallel=true)
