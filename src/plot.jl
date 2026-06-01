@@ -1,16 +1,18 @@
 using CairoMakie
 
-function plot_loss(train_loss, noiseless_loss, val_loss, fn)
+function plot_loss(train_loss, noiseless_loss, val_loss, fn; val_loss_1step=nothing)
     fig = Figure()
     ax = Axis(fig[1, 1], xlabel="Epoch", ylabel="MSE Loss", title="Losses", yscale=log10,
         xminorgridvisible=true, yminorgridvisible=true)
-    lines!(ax, 1:length(train_loss), train_loss, color=:blue, label="Train Loss")
-    lines!(ax, 1:length(val_loss), val_loss, color=:red, label="Validation Loss")
-    lines!(ax, 1:length(noiseless_loss), noiseless_loss, color=:green, label="Noiseless Loss")
+    lines!(ax, 1:length(train_loss),     train_loss,     color=:blue,   label="Train Loss")
+    lines!(ax, 1:length(val_loss),       val_loss,       color=:red,    label="Val Loss (strategy)")
+    if val_loss_1step !== nothing
+        lines!(ax, 1:length(val_loss_1step), val_loss_1step, color=:orange, linestyle=:dash, label="Val Loss (1-step)")
+    end
+    lines!(ax, 1:length(noiseless_loss), noiseless_loss, color=:green,  label="Noiseless Loss")
     axislegend(ax, position=:rt)
     display(fig)
     save(fn, fig)
-    
 end
 
 

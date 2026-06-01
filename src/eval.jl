@@ -75,36 +75,83 @@ function predict_trajectory(fn, traj_ind::Int, model, norm_strategy::NormStrateg
 
 end
 
-function evaluate_all_trajectories(data_file::String, model, output_dir::String, norm_strategy::NormStrategy; device=cpu)
-    # Create output directory if it doesn't exist
-    if !isdir(output_dir)
-        mkpath(output_dir)
-    end
-
-    # Get all trajectory keys from the data file
-    trajectory_keys = []
-    jldopen(data_file, "r") do f
-        trajectory_keys = sort(collect(keys(f)))
-    end
-
-    # Process each trajectory
-    for (idx, key) in enumerate(trajectory_keys)
-        if startswith(key, "trajectory_")
-            # Extract trajectory number from key
-            traj_num = parse(Int, split(key, "_")[2])
-            println("\nEvaluating trajectory $idx: $key (traj_num=$traj_num)")
-
-            # Predict trajectory
-            gt, pred = predict_trajectory(data_file, traj_num, model, norm_strategy; device=device)
-
-            # Generate and save comparison movie
-            output_file = joinpath(output_dir, "trajectory_$(traj_num)_comparison.mp4")
-            println("Saving movie to: $output_file")
-            movie_graphs_comp(gt, pred, output_file)
+# NaN-safe per-step RMSE profile for one trajectory pair.
+# Steps at and after divergence (NaN/Inf values) become Inf.
+function _traj_rmse_profile(gt::Vector, pred::Vector)
+    T       = length(gt)
+    profile = fill(Inf, T)
+    for t in 1:T
+        diff = gt[t].ndata.dynamic .- pred[t].ndata.dynamic
+        if any(isnan, diff) || any(isinf, diff)
+            break
         end
+        profile[t] = sqrt(mean(diff .^ 2))
+    end
+    return profile
+end
+
+"""
+    evaluate_all_trajectories(data_file, model, output_dir, norm_strategy; device=cpu)
+    -> (mean_final_rmse, rmse_profile)
+
+Runs autoregressive rollout over every trajectory, saves comparison movies to
+`output_dir`, and returns rollout stability metrics:
+- `mean_final_rmse`: mean RMSE at the final timestep (Inf if any trajectory diverged)
+- `rmse_profile`:    per-step mean RMSE vector
+"""
+function evaluate_all_trajectories(data_file::String, model, output_dir::String, norm_strategy::NormStrategy; device=cpu)
+    mkpath(output_dir)
+
+    trajectory_keys = String[]
+    jldopen(data_file, "r") do f
+        trajectory_keys = sort(filter(k -> startswith(k, "trajectory_"), collect(keys(f))))
+    end
+
+    all_profiles = Vector{Vector{Float64}}()
+
+    for (idx, key) in enumerate(trajectory_keys)
+        traj_num = parse(Int, split(key, "_")[2])
+        println("\nEvaluating trajectory $idx: $key (traj_num=$traj_num)")
+
+        gt, pred = predict_trajectory(data_file, traj_num, model, norm_strategy; device=device)
+        push!(all_profiles, _traj_rmse_profile(gt, pred))
+
+        output_file = joinpath(output_dir, "trajectory_$(traj_num)_comparison.mp4")
+        println("Saving movie to: $output_file")
+        movie_graphs_comp(gt, pred, output_file)
     end
 
     println("\nEvaluation complete. All movies saved to: $output_dir")
+
+    isempty(all_profiles) && return (Inf, Float64[])
+    T_min        = minimum(length(p) for p in all_profiles)
+    rmse_profile = [mean(p[t] for p in all_profiles) for t in 1:T_min]
+    return rmse_profile[end], rmse_profile
+end
+
+"""
+    rollout_metrics(data_file, model, norm_strategy; device=cpu)
+    -> (mean_final_rmse, rmse_profile)
+
+Metrics-only version of `evaluate_all_trajectories` — no movies saved.
+"""
+function rollout_metrics(data_file::String, model, norm_strategy::NormStrategy; device=cpu)
+    trajectory_keys = String[]
+    jldopen(data_file, "r") do f
+        trajectory_keys = sort(filter(k -> startswith(k, "trajectory_"), collect(keys(f))))
+    end
+
+    all_profiles = Vector{Vector{Float64}}()
+    for key in trajectory_keys
+        traj_num = parse(Int, split(key, "_")[2])
+        gt, pred = predict_trajectory(data_file, traj_num, model, norm_strategy; device=device)
+        push!(all_profiles, _traj_rmse_profile(gt, pred))
+    end
+
+    isempty(all_profiles) && return (Inf, Float64[])
+    T_min        = minimum(length(p) for p in all_profiles)
+    rmse_profile = [mean(p[t] for p in all_profiles) for t in 1:T_min]
+    return rmse_profile[end], rmse_profile
 end
 
 function load_run(model_dir::String)

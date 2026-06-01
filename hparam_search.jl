@@ -26,7 +26,6 @@ mkpath(save_dir)
 norm_strategy = GlobalNorm(compute_norm_stats(train_path))
 
 val_x, val_y = load_data(valid_path, norm_strategy)
-dl_valid     = DataLoader((val_x, val_y), batchsize=32, shuffle=false, collate=true, parallel=true) |> device
 
 din  = size(val_x[1].ndata.dynamic, 1) + size(val_x[1].ndata.forcing, 1) + size(val_x[1].ndata.static, 1)
 dout = size(val_y[1].ndata.x, 1)
@@ -46,13 +45,22 @@ strategy_candidates = [
 nsteps_candidates = [2, 3, 5, 8]
 
 # ─── Data cache (load once per nsteps, reused across strategy types) ──────────
-data_cache = Dict{Int, Any}()
+data_cache       = Dict{Int, Any}()
+valid_data_cache = Dict{Int, Any}()
 
 function get_train_dl(nsteps)
     if !haskey(data_cache, nsteps)
         data_cache[nsteps] = load_data_multistep(train_path, norm_strategy, nsteps)
     end
     return DataLoader(data_cache[nsteps], batchsize=NBATCH, shuffle=true,
+                      collate=collate_multistep_batch, parallel=true) |> device
+end
+
+function get_valid_dl(nsteps)
+    if !haskey(valid_data_cache, nsteps)
+        valid_data_cache[nsteps] = load_data_multistep(valid_path, norm_strategy, nsteps)
+    end
+    return DataLoader(valid_data_cache[nsteps], batchsize=NBATCH, shuffle=false,
                       collate=collate_multistep_batch, parallel=true) |> device
 end
 
@@ -97,13 +105,14 @@ for (strategy_name, make_strategy) in strategy_candidates, nsteps in nsteps_cand
     @info "  strategy: $strategy_name  nsteps: $nsteps  parameters: $nparams"
 
     t_start = time()
-    train_loss, loss_noiseless, valid_loss = train_model!(model, dl_train, dl_valid, device, settings,
-                                                          norm_strategy, train_strategy)
+    train_loss, loss_noiseless, valid_loss_strategy, valid_loss_1step = train_model!(
+        model, dl_train, get_valid_dl(nsteps), device, settings, norm_strategy, train_strategy)
     elapsed = time() - t_start
 
     trial_dir = joinpath(save_dir, trial_name)
     mkpath(trial_dir)
-    plot_loss(train_loss, loss_noiseless, valid_loss, joinpath(trial_dir, "loss_plot.png"))
+    plot_loss(train_loss, loss_noiseless, valid_loss_strategy, joinpath(trial_dir, "loss_plot.png");
+              val_loss_1step=valid_loss_1step)
     open(joinpath(trial_dir, "train_settings.toml"), "w") do io
         d = Dict{String,Any}(string(f) => getfield(settings, f) for f in fieldnames(TrainSettings))
         d["norm_strategy"]  = strategy_to_dict(norm_strategy)
@@ -114,28 +123,30 @@ for (strategy_name, make_strategy) in strategy_candidates, nsteps in nsteps_cand
 
     # ── Per-trial validation rollout ──────────────────────────────────────────
     println("  Running validation rollout for $trial_name...")
-    evaluate_all_trajectories(valid_path, model |> cpu, joinpath(trial_dir, "validation"),
-                               norm_strategy; device=cpu)
+    model_cpu = model |> cpu
+    mean_final_rmse, _ = evaluate_all_trajectories(valid_path, model_cpu,
+                             joinpath(trial_dir, "validation"), norm_strategy; device=cpu)
 
-    trial_best_val = minimum(valid_loss)
-    final_val      = last(valid_loss)
-    @info "  best valid loss: $trial_best_val  |  time: $(round(elapsed, digits=1))s"
+    trial_best_val = minimum(valid_loss_strategy)
+    final_val      = last(valid_loss_strategy)
+    @info "  best valid loss: $trial_best_val  |  rollout RMSE: $mean_final_rmse  |  time: $(round(elapsed, digits=1))s"
 
-    if trial_best_val < best_val_global
-        global best_val_global     = trial_best_val
-        global best_model          = model |> cpu
+    if mean_final_rmse < best_val_global
+        global best_val_global     = mean_final_rmse
+        global best_model          = model_cpu
         global best_model_settings = model_settings
         global best_train_strategy = train_strategy
     end
 
     completed[trial_name] = Dict(
-        "strategy_name"  => strategy_name,
-        "nsteps"         => nsteps,
-        "nparams"        => nparams,
-        "best_val_loss"  => trial_best_val,
-        "final_val_loss" => final_val,
-        "train_seconds"  => round(elapsed, digits=2),
-        "timestamp"      => string(now()),
+        "strategy_name"   => strategy_name,
+        "nsteps"          => nsteps,
+        "nparams"         => nparams,
+        "mean_final_rmse" => mean_final_rmse,
+        "best_val_loss"   => trial_best_val,
+        "final_val_loss"  => final_val,
+        "train_seconds"   => round(elapsed, digits=2),
+        "timestamp"       => string(now()),
     )
     open(log_file, "w") do io
         TOML.print(io, completed)
@@ -143,20 +154,22 @@ for (strategy_name, make_strategy) in strategy_candidates, nsteps in nsteps_cand
 end
 
 # ─── Report ───────────────────────────────────────────────────────────────────
-entries = sort(collect(completed), by = kv -> kv[2]["best_val_loss"])
+entries = sort(collect(completed), by = kv -> get(kv[2], "mean_final_rmse", Inf))
 
-@info "\n=== Results (sorted by best validation loss) ==="
+@info "\n=== Results (sorted by rollout RMSE) ==="
 @info rpad("trial", 36) * rpad("strategy", 22) * rpad("nsteps", 8) *
-      rpad("nparams", 10) * rpad("best_val", 14) * "time (s)"
+      rpad("nparams", 10) * rpad("rollout_rmse", 16) * rpad("best_val", 14) * "time (s)"
 for (name, r) in entries
+    rmse_str = isinf(get(r, "mean_final_rmse", Inf)) ? "Inf (diverged)" :
+               string(round(r["mean_final_rmse"], sigdigits=5))
     @info rpad(name, 36) * rpad(r["strategy_name"], 22) * rpad(r["nsteps"], 8) *
-          rpad(r["nparams"], 10) * rpad(round(r["best_val_loss"], sigdigits=5), 14) *
-          string(r["train_seconds"])
+          rpad(r["nparams"], 10) * rpad(rmse_str, 16) *
+          rpad(round(r["best_val_loss"], sigdigits=5), 14) * string(r["train_seconds"])
 end
 
 best_name, best = first(entries)
 @info "Best: $best_name  strategy=$(best["strategy_name"])  nsteps=$(best["nsteps"])  " *
-      "params=$(best["nparams"])  val=$(best["best_val_loss"])  time=$(best["train_seconds"])s"
+      "params=$(best["nparams"])  rollout_rmse=$(get(best, "mean_final_rmse", Inf))  time=$(best["train_seconds"])s"
 
 # ─── Save best model and evaluate all validation trajectories ─────────────────
 if best_model !== nothing

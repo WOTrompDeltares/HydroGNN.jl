@@ -168,7 +168,7 @@ function compute_loss(strategy::MultiStepRollout, model, batch, device)
             total_loss += Flux.mse(yhat_k, x_seq[k+1].ndata.dynamic)
             dyn_cur = yhat_k
         end
-        total_loss
+        total_loss / strategy.nsteps
     end
     return batch_loss, grad[1], noiseless_loss
 end
@@ -236,9 +236,72 @@ function compute_loss(strategy::ScheduledRollout, model, batch, device)
             total_loss += Flux.mse(yhat_k, x_seq[k+1].ndata.dynamic)
             dyn_cur = yhat_k
         end
-        total_loss
+        total_loss / nsteps
     end
     return batch_loss, grad[1], noiseless_loss
+end
+
+# ─── Validation loss (no gradients) ──────────────────────────────────────────
+# Returns (strategy_loss, loss_1step). For non-rollout strategies both are equal.
+
+function compute_val_loss(::TrainStrategy, model, batch, device)
+    x, y = batch
+    loss = Flux.mse(model(x), y.x)
+    return loss, loss
+end
+
+function compute_val_loss(strategy::MultiStepRollout, model, batch, device)
+    x_seq      = batch
+    loss_1step = Flux.mse(model(x_seq[1]), x_seq[2].ndata.dynamic)
+    dyn_cur    = x_seq[1].ndata.dynamic
+    total_loss = 0.0f0
+    for k in 1:strategy.nsteps
+        g_k    = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
+        yhat_k = model(g_k)
+        total_loss += Flux.mse(yhat_k, x_seq[k+1].ndata.dynamic)
+        dyn_cur = yhat_k
+    end
+    return total_loss / strategy.nsteps, loss_1step
+end
+
+function compute_val_loss(strategy::PushforwardRollout, model, batch, device)
+    x_seq      = batch
+    loss_1step = Flux.mse(model(x_seq[1]), x_seq[2].ndata.dynamic)
+    dyn_cur    = x_seq[1].ndata.dynamic
+    for k in 1:(strategy.nsteps - 1)
+        g_k     = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
+        dyn_cur = model(g_k)
+    end
+    g_last = GNNGraph(x_seq[end-1], ndata=(; x_seq[end-1].ndata..., dynamic=dyn_cur))
+    return Flux.mse(model(g_last), x_seq[end].ndata.dynamic), loss_1step
+end
+
+function compute_val_loss(strategy::ScheduledRollout, model, batch, device)
+    x_seq      = batch
+    nsteps     = strategy.current_nsteps
+    loss_1step = Flux.mse(model(x_seq[1]), x_seq[2].ndata.dynamic)
+    dyn_cur    = x_seq[1].ndata.dynamic
+    total_loss = 0.0f0
+    for k in 1:nsteps
+        g_k    = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
+        yhat_k = model(g_k)
+        total_loss += Flux.mse(yhat_k, x_seq[k+1].ndata.dynamic)
+        dyn_cur = yhat_k
+    end
+    return total_loss / nsteps, loss_1step
+end
+
+function compute_val_loss(strategy::ScheduledPushforward, model, batch, device)
+    x_seq      = batch
+    nsteps     = strategy.current_nsteps
+    loss_1step = Flux.mse(model(x_seq[1]), x_seq[2].ndata.dynamic)
+    dyn_cur    = x_seq[1].ndata.dynamic
+    for k in 1:(nsteps - 1)
+        g_k     = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
+        dyn_cur = model(g_k)
+    end
+    g_last = GNNGraph(x_seq[nsteps], ndata=(; x_seq[nsteps].ndata..., dynamic=dyn_cur))
+    return Flux.mse(model(g_last), x_seq[nsteps+1].ndata.dynamic), loss_1step
 end
 
 Base.@kwdef mutable struct TrainSettings
@@ -253,52 +316,62 @@ Base.@kwdef mutable struct TrainSettings
     save_dir::String = "models"
 end
 
-function train_model!(model, dl_train, dl_valid, device, settings::TrainSettings, norm_strategy::NormStrategy, train_strategy::TrainStrategy)
-    nepochs = settings.nepochs
-    lr = settings.lr
+function train_model!(model, dl_train, dl_valid_strategy, device, settings::TrainSettings, norm_strategy::NormStrategy, train_strategy::TrainStrategy)
+    nepochs  = settings.nepochs
+    lr       = settings.lr
     lr_final = settings.lr_final
-    lr_step = settings.lr_step
+    lr_step  = settings.lr_step
 
     lr_decay = (lr_final / lr)^(lr_step / nepochs)
-    opt = Flux.setup(Adam(lr), model)
+    opt      = Flux.setup(Adam(lr), model)
     schedule = Step(start=lr, decay=lr_decay, step_sizes=lr_step)
-    pr = Progress(nepochs, desc="Training Progress", showspeed=true)
+    pr       = Progress(nepochs, desc="Training Progress", showspeed=true)
 
-    train_loss = zeros(nepochs)
-    valid_loss = zeros(nepochs)
-    loss_noiseless = zeros(nepochs)
+    train_loss          = zeros(nepochs)
+    valid_loss_strategy = zeros(nepochs)
+    valid_loss_1step    = zeros(nepochs)
+    loss_noiseless      = zeros(nepochs)
 
     for epoch in 1:nepochs
         Flux.adjust!(opt, eta=schedule(epoch))
         step_schedule!(train_strategy, epoch)
-        loss = 0.0f0
-        val_loss = 0.0f0
+        loss           = 0.0f0
         noiseless_loss = 0.0f0
+        n_valid        = 0
 
         for batch in dl_train
             batch_loss, grads, nl_loss = compute_loss(train_strategy, model, batch, device)
-            Flux.Optimise.update!(opt, model, grads)
-            loss += batch_loss
-            noiseless_loss += nl_loss
+            if !isnan(batch_loss)
+                Flux.Optimise.update!(opt, model, grads)
+                loss           += batch_loss
+                noiseless_loss += nl_loss
+                n_valid        += 1
+            end
         end
 
-        for (x, y) in dl_valid
-            yhat = model(x)
-            val_loss += Flux.mse(yhat, y.x)
+        val_strat = 0.0f0
+        val_1step = 0.0f0
+        for batch in dl_valid_strategy
+            s_l, o_l = compute_val_loss(train_strategy, model, batch, device)
+            val_strat += s_l
+            val_1step += o_l
         end
+        val_strat /= length(dl_valid_strategy)
+        val_1step /= length(dl_valid_strategy)
 
-        loss /= length(dl_train)
-        val_loss /= length(dl_valid)
-        noiseless_loss /= length(dl_train)
+        loss           /= max(1, n_valid)
+        noiseless_loss /= max(1, n_valid)
         next!(pr;
-            showvalues=[(:epoch, epoch), (:train_loss, loss), (:val_loss, val_loss), (:loss_noiseless, noiseless_loss)]
+            showvalues=[(:epoch, epoch), (:train_loss, loss), (:val_strategy, val_strat),
+                        (:val_1step, val_1step), (:noiseless, noiseless_loss)]
         )
-        train_loss[epoch] = loss
-        valid_loss[epoch] = val_loss
-        loss_noiseless[epoch] = noiseless_loss
+        train_loss[epoch]          = loss
+        valid_loss_strategy[epoch] = val_strat
+        valid_loss_1step[epoch]    = val_1step
+        loss_noiseless[epoch]      = noiseless_loss
     end
 
-    return train_loss, loss_noiseless, valid_loss
+    return train_loss, loss_noiseless, valid_loss_strategy, valid_loss_1step
 end
 
 function train_settings_from_toml(d::Dict)

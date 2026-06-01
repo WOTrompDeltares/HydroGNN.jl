@@ -1,4 +1,7 @@
 name = "HydroGNN"
+uuid = "d91e11c8-d379-4472-9395-271d0004d192"
+version = "0.1.0"
+authors = ["WOTrompDeltares <willem.tromp@deltares.nl>"]
 
 [deps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
@@ -15,13 +18,11 @@ Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 StatsBase = "2913bbd2-ae8a-5f71-8c99-4fb6c76f3a91"
 TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 cuDNN = "02a925ec-e4fe-4b08-9a7e-0d78e3d38ccd"
 
 [compat]
-julia="1.12"
+Test = "1.11.0"
+julia = "1.12"
 
-[extras]
-Test = "8dfed614-e22c-358a-b018-d7dc80a064a0"
 
-[targets]
-test = ["Test"]

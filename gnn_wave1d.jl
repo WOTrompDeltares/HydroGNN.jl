@@ -41,13 +41,15 @@ train_strategy = SingleStepNoise(3e-2)  # or: NoNoise(), MultiStepRollout(5, 0.0
 val_x, val_y = load_data(settings.valid_data_path, norm_strategy)
 
 if train_strategy isa RolloutStrategy
-    train_x = load_data_multistep(settings.train_data_path, norm_strategy, train_strategy.nsteps)
-    dl_train = DataLoader(train_x, batchsize=settings.nbatch, shuffle=true, collate=collate_multistep_batch, parallel=true)
+    train_x           = load_data_multistep(settings.train_data_path, norm_strategy, train_strategy.nsteps)
+    dl_train          = DataLoader(train_x, batchsize=settings.nbatch, shuffle=true, collate=collate_multistep_batch, parallel=true)
+    valid_x_ms        = load_data_multistep(settings.valid_data_path, norm_strategy, train_strategy.nsteps)
+    dl_valid_strategy = DataLoader(valid_x_ms, batchsize=settings.nbatch, shuffle=false, collate=collate_multistep_batch, parallel=true)
 else
-    train_x, train_y = load_data(settings.train_data_path, norm_strategy)
-    dl_train = DataLoader((train_x, train_y), batchsize=settings.nbatch, shuffle=true, collate=true, parallel=true)
+    train_x, train_y  = load_data(settings.train_data_path, norm_strategy)
+    dl_train          = DataLoader((train_x, train_y), batchsize=settings.nbatch, shuffle=true, collate=true, parallel=true)
+    dl_valid_strategy = DataLoader((val_x, val_y), batchsize=settings.nbatch, shuffle=false, collate=true, parallel=true)
 end
-dl_valid = DataLoader((val_x, val_y), batchsize=settings.nbatch, shuffle=false, collate=true, parallel=true)
 
 # %%
 
@@ -70,11 +72,11 @@ if !isdir(model_dir)
 end
 
 
-model = model |> device
-dl_train = dl_train |> device
-dl_valid = dl_valid |> device
+model             = model |> device
+dl_train          = dl_train |> device
+dl_valid_strategy = dl_valid_strategy |> device
 
-train_loss, loss_noiseless, valid_loss = train_model!(model, dl_train, dl_valid, device, settings, norm_strategy, train_strategy)
+train_loss, loss_noiseless, valid_loss_strategy, valid_loss_1step = train_model!(model, dl_train, dl_valid_strategy, device, settings, norm_strategy, train_strategy)
 
 jldsave(joinpath(model_dir, "model.jld2");
     model          = model |> cpu,
@@ -91,7 +93,7 @@ save_model_settings(model_settings, joinpath(model_dir, "model_settings.toml"))
 
 # %%
 
-plot_loss(train_loss, loss_noiseless, valid_loss, joinpath(model_dir, "loss_plot.png"))
+plot_loss(train_loss, loss_noiseless, valid_loss_strategy, joinpath(model_dir, "loss_plot.png"); val_loss_1step=valid_loss_1step)
 
 
 # %%
