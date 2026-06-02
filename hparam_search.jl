@@ -18,7 +18,7 @@ end
 # ─── Fixed configuration ──────────────────────────────────────────────────────
 train_path = "data/lake1d_surge/train.jld2"
 valid_path  = "data/lake1d_surge/valid.jld2"
-save_dir    = "models/rollout_strategy_search"
+save_dir    = "models/scheduled_rollout_search"
 log_file    = joinpath(save_dir, "results.toml")
 
 mkpath(save_dir)
@@ -35,14 +35,18 @@ const DHIDDEN = 128
 const NHIDDEN = 3
 const SKIP    = false
 const NBATCH  = 32
-const NEPOCHS = 50
+const NEPOCHS       = 250
+const NSTEPS        = 5    # schedule ramps from 1 up to this, then plateaus
+const STEP_INTERVAL = 50   # epochs per step increase
+
+# epoch 1-50 → 1 step, 51-100 → 2, 101-150 → 3, 151-200 → 4, 201-250 → 5
+step_schedule(epoch) = div(epoch - 1, STEP_INTERVAL) + 1
 
 # ─── Search space ─────────────────────────────────────────────────────────────
 strategy_candidates = [
-    ("MultiStepRollout",   nsteps -> MultiStepRollout(nsteps, 0.0)),
-    ("PushforwardRollout", nsteps -> PushforwardRollout(nsteps, 0.0)),
+    ("ScheduledRollout",     () -> ScheduledRollout(step_schedule,     NSTEPS, 0.0)),
+    ("ScheduledPushforward", () -> ScheduledPushforward(step_schedule, NSTEPS, 0.0)),
 ]
-nsteps_candidates = [2, 3, 5, 8]
 
 # ─── Data cache (load once per nsteps, reused across strategy types) ──────────
 data_cache       = Dict{Int, Any}()
@@ -73,8 +77,8 @@ global best_train_strategy = nothing
 global best_val_global     = Inf
 
 # ─── Trial loop ───────────────────────────────────────────────────────────────
-for (strategy_name, make_strategy) in strategy_candidates, nsteps in nsteps_candidates
-    trial_name = "$(strategy_name)_ns$(nsteps)"
+for (strategy_name, make_strategy) in strategy_candidates
+    trial_name = strategy_name
 
     if haskey(completed, trial_name)
         @info "Skipping $trial_name (already logged)"
@@ -98,15 +102,15 @@ for (strategy_name, make_strategy) in strategy_candidates, nsteps in nsteps_cand
     model_settings.din              = din
     model_settings.dout             = dout
 
-    train_strategy = make_strategy(nsteps)
-    dl_train       = get_train_dl(nsteps)
+    train_strategy = make_strategy()
+    dl_train       = get_train_dl(NSTEPS)
     model          = GNN(din, DHIDDEN, dout, NHIDDEN; skip=SKIP) |> device
     nparams        = sum(length, Flux.trainables(model))
-    @info "  strategy: $strategy_name  nsteps: $nsteps  parameters: $nparams"
+    @info "  strategy: $strategy_name  nsteps_max: $NSTEPS  parameters: $nparams"
 
     t_start = time()
     train_loss, loss_noiseless, valid_loss_strategy, valid_loss_1step = train_model!(
-        model, dl_train, get_valid_dl(nsteps), device, settings, norm_strategy, train_strategy)
+        model, dl_train, get_valid_dl(NSTEPS), device, settings, norm_strategy, train_strategy)
     elapsed = time() - t_start
 
     trial_dir = joinpath(save_dir, trial_name)
@@ -140,7 +144,8 @@ for (strategy_name, make_strategy) in strategy_candidates, nsteps in nsteps_cand
 
     completed[trial_name] = Dict(
         "strategy_name"   => strategy_name,
-        "nsteps"          => nsteps,
+        "nsteps_max"      => NSTEPS,
+        "step_interval"   => STEP_INTERVAL,
         "nparams"         => nparams,
         "mean_final_rmse" => mean_final_rmse,
         "best_val_loss"   => trial_best_val,
@@ -157,18 +162,18 @@ end
 entries = sort(collect(completed), by = kv -> get(kv[2], "mean_final_rmse", Inf))
 
 @info "\n=== Results (sorted by rollout RMSE) ==="
-@info rpad("trial", 36) * rpad("strategy", 22) * rpad("nsteps", 8) *
+@info rpad("trial", 26) * rpad("strategy", 22) * rpad("nsteps_max", 12) * rpad("step_iv", 10) *
       rpad("nparams", 10) * rpad("rollout_rmse", 16) * rpad("best_val", 14) * "time (s)"
 for (name, r) in entries
     rmse_str = isinf(get(r, "mean_final_rmse", Inf)) ? "Inf (diverged)" :
                string(round(r["mean_final_rmse"], sigdigits=5))
-    @info rpad(name, 36) * rpad(r["strategy_name"], 22) * rpad(r["nsteps"], 8) *
-          rpad(r["nparams"], 10) * rpad(rmse_str, 16) *
+    @info rpad(name, 26) * rpad(r["strategy_name"], 22) * rpad(r["nsteps_max"], 12) *
+          rpad(r["step_interval"], 10) * rpad(r["nparams"], 10) * rpad(rmse_str, 16) *
           rpad(round(r["best_val_loss"], sigdigits=5), 14) * string(r["train_seconds"])
 end
 
 best_name, best = first(entries)
-@info "Best: $best_name  strategy=$(best["strategy_name"])  nsteps=$(best["nsteps"])  " *
+@info "Best: $best_name  strategy=$(best["strategy_name"])  nsteps_max=$(best["nsteps_max"])  " *
       "params=$(best["nparams"])  rollout_rmse=$(get(best, "mean_final_rmse", Inf))  time=$(best["train_seconds"])s"
 
 # ─── Save best model and evaluate all validation trajectories ─────────────────
