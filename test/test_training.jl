@@ -100,14 +100,16 @@ end
     @test d_pfr["name"]   == "PushforwardRollout"
     @test d_pfr["nsteps"] == 4
 
-    d_sr = strategy_to_dict(ScheduledRollout(identity, 5, 0.01))
+    d_sr = strategy_to_dict(ScheduledRollout(5, 10, 0.01))
     @test d_sr["name"]        == "ScheduledRollout"
-    @test d_sr["nsteps"]      == 5
+    @test d_sr["steps"]       == collect(1:5)
+    @test d_sr["durations"]   == fill(10, 5)
     @test d_sr["noise_scale"] ≈  0.01
 
-    d_sp = strategy_to_dict(ScheduledPushforward(identity, 6, 0.0))
-    @test d_sp["name"]   == "ScheduledPushforward"
-    @test d_sp["nsteps"] == 6
+    d_sp = strategy_to_dict(ScheduledPushforward(6, 10, 0.0))
+    @test d_sp["name"]      == "ScheduledPushforward"
+    @test d_sp["steps"]     == collect(1:6)
+    @test d_sp["durations"] == fill(10, 6)
 end
 
 # ─── step_schedule! ───────────────────────────────────────────────────────────
@@ -119,20 +121,21 @@ end
 end
 
 @testset "step_schedule! advances ScheduledRollout current_nsteps" begin
-    sr = ScheduledRollout(identity, 10, 0.0)
+    # 10 stages of 5 epochs each: stage k active for epochs (k-1)*5+1 .. k*5
+    sr = ScheduledRollout(10, 5, 0.0)
     @test sr.current_nsteps == 1
-    HydroGNN.step_schedule!(sr, 4)
-    @test sr.current_nsteps == 4
-    HydroGNN.step_schedule!(sr, 20)     # capped at nsteps=10
+    HydroGNN.step_schedule!(sr, 6)      # epoch 6 → stage 2 → nsteps=2
+    @test sr.current_nsteps == 2
+    HydroGNN.step_schedule!(sr, 1000)   # beyond last stage → capped at 10
     @test sr.current_nsteps == 10
 end
 
 @testset "step_schedule! advances ScheduledPushforward current_nsteps" begin
-    sp = ScheduledPushforward(identity, 8, 0.0)
+    sp = ScheduledPushforward(8, 5, 0.0)
     @test sp.current_nsteps == 1
-    HydroGNN.step_schedule!(sp, 3)
-    @test sp.current_nsteps == 3
-    HydroGNN.step_schedule!(sp, 100)    # capped at nsteps=8
+    HydroGNN.step_schedule!(sp, 6)      # epoch 6 → stage 2 → nsteps=2
+    @test sp.current_nsteps == 2
+    HydroGNN.step_schedule!(sp, 1000)   # beyond last stage → capped at 8
     @test sp.current_nsteps == 8
 end
 
@@ -228,14 +231,14 @@ end
 
 @testset "compute_loss ScheduledRollout respects current_nsteps" begin
     model = _small_model()
-    strat = ScheduledRollout(identity, 3, 0.0)   # starts at current_nsteps=1
-    x_seq = _multistep_batch(3)                  # length 4
+    strat = ScheduledRollout(3, 5, 0.0)   # stages 1,2,3 each 5 epochs; starts at 1
+    x_seq = _multistep_batch(3)           # length 4
 
     loss1, grad1, _ = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
     @test loss1 >= 0
     @test grad1 !== nothing
 
-    HydroGNN.step_schedule!(strat, 2)
+    HydroGNN.step_schedule!(strat, 6)     # epoch 6 → stage 2 → current_nsteps=2
     @test strat.current_nsteps == 2
 
     loss2, grad2, _ = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
@@ -245,14 +248,14 @@ end
 
 @testset "compute_loss ScheduledPushforward respects current_nsteps" begin
     model = _small_model()
-    strat = ScheduledPushforward(identity, 3, 0.0)   # starts at current_nsteps=1
-    x_seq = _multistep_batch(3)                       # length 4
+    strat = ScheduledPushforward(3, 5, 0.0)   # starts at current_nsteps=1
+    x_seq = _multistep_batch(3)               # length 4
 
     loss1, grad1, _ = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
     @test loss1 >= 0
     @test grad1 !== nothing
 
-    HydroGNN.step_schedule!(strat, 2)
+    HydroGNN.step_schedule!(strat, 6)     # epoch 6 → stage 2 → current_nsteps=2
     @test strat.current_nsteps == 2
 
     loss2, grad2, _ = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
@@ -302,26 +305,26 @@ end
     @test s2.noise_scale ≈  0.01
 end
 
-@testset "save/load TrainStrategy: ScheduledRollout restores identity schedule" begin
-    s  = ScheduledRollout(identity, 5, 0.0)
+@testset "save/load TrainStrategy: ScheduledRollout round-trips steps/durations" begin
+    s  = ScheduledRollout(5, 10, 0.0)
     p  = joinpath(STRAT_TMPDIR, "sr.toml")
     save_train_strategy(s, p)
     s2 = load_train_strategy(p)
     @test s2 isa ScheduledRollout
-    @test s2.nsteps      == 5
-    @test s2.noise_scale ≈  0.0
-    @test s2.schedule    == identity
+    @test s2.steps     == collect(1:5)
+    @test s2.durations == fill(10, 5)
+    @test s2.noise_scale ≈ 0.0
 end
 
-@testset "save/load TrainStrategy: ScheduledPushforward restores identity schedule" begin
-    s  = ScheduledPushforward(identity, 6, 0.03)
+@testset "save/load TrainStrategy: ScheduledPushforward round-trips steps/durations" begin
+    s  = ScheduledPushforward(6, 10, 0.03)
     p  = joinpath(STRAT_TMPDIR, "sp.toml")
     save_train_strategy(s, p)
     s2 = load_train_strategy(p)
     @test s2 isa ScheduledPushforward
-    @test s2.nsteps      == 6
-    @test s2.noise_scale ≈  0.03
-    @test s2.schedule    == identity
+    @test s2.steps     == collect(1:6)
+    @test s2.durations == fill(10, 6)
+    @test s2.noise_scale ≈ 0.03
 end
 
 @testset "load_train_strategy: unknown name errors" begin
@@ -359,7 +362,7 @@ end
 end
 
 @testset "show text/plain: ScheduledRollout shows current_nsteps" begin
-    s   = ScheduledRollout(identity, 4, 0.0)
+    s   = ScheduledRollout(4, 10, 0.0)
     str = sprint(show, MIME("text/plain"), s)
     @test occursin("current_nsteps", str)
     @test occursin("1",              str)   # initial value

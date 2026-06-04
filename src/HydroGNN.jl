@@ -21,5 +21,5 @@ include("eval.jl")
 export predict_trajectory, evaluate_all_trajectories, rollout_metrics, load_run
 
 include("hpar_search.jl")
-export run_hparam_search
+export run_hparam_search, save_csv, load_csv, best
 end

@@ -1,5 +1,7 @@
 import CUDA
 import cuDNN
+using CSV
+using DataFrames
 using Dates
 using Flux
 using Flux: DataLoader
@@ -11,8 +13,8 @@ using TOML
 
 function _strategy_label(d::Dict)
     parts = [d["name"]]
-    haskey(d, "nsteps")        && push!(parts, "ns$(d["nsteps"])")
-    haskey(d, "step_interval") && push!(parts, "si$(d["step_interval"])")
+    haskey(d, "steps")  && push!(parts, "ms$(maximum(Int.(d["steps"])))")  # Scheduled*: use max steps
+    haskey(d, "nsteps") && push!(parts, "ns$(d["nsteps"])")               # MultiStep/Pushforward
     get(d, "noise_scale", 0.0) != 0.0 && push!(parts, "noise$(d["noise_scale"])")
     return join(parts, "_")
 end
@@ -24,6 +26,53 @@ function _split_swept(d::Dict)
         v isa Vector ? (swept[k] = v) : (fixed[k] = v)
     end
     return fixed, swept
+end
+
+# ─── Result helpers ──────────────────────────────────────────────────────────
+
+const _RESULTS_COLS = [
+    :trial_name => String, :strategy => String,
+    :dhidden => Int, :nhidden => Int, :skip_connections => Bool,
+    :nepochs => Int, :nbatch => Int, :nparams => Int,
+    :mean_final_rmse => Float64, :best_val_loss => Float64, :final_val_loss => Float64,
+    :train_seconds => Float64, :timestamp => String,
+]
+
+"""Return the row with the lowest `mean_final_rmse`."""
+best(df::DataFrame) = df[argmin(df.mean_final_rmse), :]
+
+"""
+    save_csv(results::DataFrame, path::String)
+
+Write trial results to a CSV file, sorted by rollout RMSE.
+"""
+save_csv(results::DataFrame, path::String) =
+    CSV.write(path, sort(results, :mean_final_rmse))
+
+"""
+    load_csv(path::String) -> DataFrame
+
+Read trial results written by `save_csv`.
+"""
+load_csv(path::String) = CSV.read(path, DataFrame)
+
+function _empty_results()
+    DataFrame(; (col => type[] for (col, type) in _RESULTS_COLS)...)
+end
+
+function _results_from_completed(completed::Dict)
+    df = _empty_results()
+    for (name, d) in completed
+        push!(df, (
+            name, d["strategy"],
+            d["dhidden"], d["nhidden"], d["skip_connections"],
+            d["nepochs"], d["nbatch"], d["nparams"],
+            get(d, "mean_final_rmse", Inf),
+            d["best_val_loss"], d["final_val_loss"],
+            d["train_seconds"], d["timestamp"],
+        ))
+    end
+    return df
 end
 
 # ─── Main entry point ─────────────────────────────────────────────────────────
@@ -56,8 +105,9 @@ function run_hparam_search(config_path::String)
     # ── Paths & norm ──────────────────────────────────────────────────────────
     train_path = exp_cfg["train_data"]
     valid_path = exp_cfg["valid_data"]
-    save_dir   = exp_cfg["save_dir"]
-    log_file   = joinpath(save_dir, "results.toml")
+    save_dir       = exp_cfg["save_dir"]
+    log_file       = joinpath(save_dir, "results.toml")
+    save_best_only = get(exp_cfg, "save_best_only", false)
 
     mkpath(save_dir)
 
@@ -112,8 +162,9 @@ function run_hparam_search(config_path::String)
     end
 
     # ── Resume state ──────────────────────────────────────────────────────────
-    completed           = isfile(log_file) ? TOML.parsefile(log_file) : Dict{String,Any}()
-    best_model          = nothing
+    completed  = isfile(log_file) ? TOML.parsefile(log_file) : Dict{String,Any}()
+    results    = _results_from_completed(completed)
+    best_model = nothing
     best_model_settings = nothing
     best_train_strategy = nothing
     best_val_global     = Inf
@@ -132,7 +183,7 @@ function run_hparam_search(config_path::String)
         @info "\n=== Trial: $trial_name ==="
 
         train_strategy = build_strategy_from_config(strat_d)
-        nsteps = get(strat_d, "nsteps", 1)
+        nsteps = haskey(strat_d, "steps") ? maximum(Int.(strat_d["steps"])) : get(strat_d, "nsteps", 1)
 
         settings                 = train_settings_from_toml(merge(train_fixed, combo))
         settings.train_data_path = train_path
@@ -180,6 +231,12 @@ function run_hparam_search(config_path::String)
         mean_final_rmse, _ = evaluate_all_trajectories(valid_path, model_cpu,
                                  joinpath(trial_dir, "validation"), norm_strategy; device=cpu)
 
+        if !save_best_only
+            jldsave(joinpath(trial_dir, "model.jld2");
+                    model=model_cpu, norm_strategy=norm_strategy,
+                    train_strategy=train_strategy)
+        end
+
         trial_best_val = minimum(valid_loss_strategy)
         final_val      = last(valid_loss_strategy)
         @info "  best valid loss: $trial_best_val  |  rollout RMSE: $mean_final_rmse  |  time: $(round(elapsed, digits=1))s"
@@ -208,22 +265,22 @@ function run_hparam_search(config_path::String)
         open(log_file, "w") do io
             TOML.print(io, completed)
         end
+        push!(results, (
+            trial_name, slabel,
+            model_settings.dhidden, model_settings.nhidden, model_settings.skip_connections,
+            settings.nepochs, settings.nbatch, nparams,
+            mean_final_rmse, trial_best_val, final_val,
+            round(elapsed, digits=2), string(now()),
+        ))
     end
 
     # ── Report ────────────────────────────────────────────────────────────────
-    entries = sort(collect(completed), by = kv -> get(kv[2], "mean_final_rmse", Inf))
+    display_cols = [:trial_name, :mean_final_rmse, :best_val_loss, :final_val_loss, :train_seconds]
+    show(stdout, sort(results, :mean_final_rmse)[:, display_cols]; allrows=true)
+    println()
+    save_csv(results, joinpath(save_dir, "results.csv"))
 
-    @info "\n=== Results (sorted by rollout RMSE) ==="
-    @info rpad("trial", 44) * rpad("nparams", 10) * rpad("rollout_rmse", 16) * rpad("best_val", 14) * "time (s)"
-    for (name, r) in entries
-        rmse_str = isinf(get(r, "mean_final_rmse", Inf)) ? "Inf (diverged)" :
-                   string(round(r["mean_final_rmse"], sigdigits=5))
-        @info rpad(name, 44) * rpad(r["nparams"], 10) * rpad(rmse_str, 16) *
-              rpad(round(r["best_val_loss"], sigdigits=5), 14) * string(r["train_seconds"])
-    end
-
-    best_name, best = first(entries)
-    @info "Best: $best_name  rollout_rmse=$(get(best, "mean_final_rmse", Inf))  time=$(best["train_seconds"])s"
+    best_name = nrow(results) == 0 ? nothing : best(results).trial_name
 
     # ── Save best model ───────────────────────────────────────────────────────
     if best_model !== nothing
@@ -238,15 +295,12 @@ function run_hparam_search(config_path::String)
         winning_dir = joinpath(save_dir, best_name)
         cp(joinpath(winning_dir, "train_settings.toml"), joinpath(best_dir, "train_settings.toml"); force=true)
 
-        @info "\nBest model saved to: $best_dir"
+        cp(joinpath(save_dir, best_name, "validation"), joinpath(best_dir, "validation"); force=true)
 
-        println("\nRunning full validation rollout for best model ($best_name)...")
-        evaluate_all_trajectories(valid_path, best_model, joinpath(best_dir, "validation"),
-                                   norm_strategy; device=cpu)
-        println("Validation rollout complete.")
+        @info "\nBest model saved to: $best_dir"
     else
         @info "\nAll trials were skipped (already completed)."
     end
 
-    return entries
+    return results
 end

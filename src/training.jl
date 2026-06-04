@@ -24,45 +24,75 @@ struct PushforwardRollout <: RolloutStrategy
 end
 
 mutable struct ScheduledRollout <: RolloutStrategy
-    schedule          # callable: epoch -> nsteps (e.g. a ParameterSchedulers schedule)
-    nsteps::Int       # maximum nsteps — used by load_data_multistep at data-load time
-    noise_scale::Float64
-    current_nsteps::Int  # updated each epoch by step_schedule!
-end
-
-function ScheduledRollout(schedule, nsteps::Int, noise_scale::Float64)
-    ScheduledRollout(schedule, nsteps, noise_scale, 1)
-end
-
-step_schedule!(::TrainStrategy, epoch) = nothing
-step_schedule!(s::ScheduledRollout, epoch) = (s.current_nsteps = min(round(Int, s.schedule(epoch)), s.nsteps))
-
-mutable struct ScheduledPushforward <: RolloutStrategy
-    schedule          # callable: epoch -> nsteps
-    nsteps::Int       # maximum nsteps — used by load_data_multistep at data-load time
+    steps::Vector{Int}      # nsteps value at each stage
+    durations::Vector{Int}  # number of epochs to spend at each stage
     noise_scale::Float64
     current_nsteps::Int
 end
 
-function ScheduledPushforward(schedule, nsteps::Int, noise_scale::Float64)
-    ScheduledPushforward(schedule, nsteps, noise_scale, 1)
+"""Fully explicit constructor."""
+function ScheduledRollout(steps::Vector{Int}, durations::Vector{Int}, noise_scale::Float64)
+    length(steps) == length(durations) || error("steps and durations must have the same length")
+    ScheduledRollout(steps, durations, noise_scale, steps[1])
 end
 
-step_schedule!(s::ScheduledPushforward, epoch) = (s.current_nsteps = min(round(Int, s.schedule(epoch)), s.nsteps))
+"""Uniform schedule: ramps 1:nsteps, each stage lasting step_interval epochs."""
+ScheduledRollout(nsteps::Int, step_interval::Int, noise_scale::Float64) =
+    ScheduledRollout(collect(1:nsteps), fill(step_interval, nsteps), noise_scale)
+
+"""Threshold schedule: step increases by 1 at each epoch in epoch_thresholds (length = nsteps-1)."""
+function ScheduledRollout(epoch_thresholds::Vector{Int}, noise_scale::Float64)
+    n = length(epoch_thresholds) + 1
+    ScheduledRollout(collect(1:n), [epoch_thresholds[1] - 1; diff(epoch_thresholds); 1], noise_scale)
+end
+
+step_schedule!(::TrainStrategy, epoch) = nothing
+function step_schedule!(s::ScheduledRollout, epoch)
+    stage = clamp(searchsortedfirst(cumsum(s.durations), epoch), 1, length(s.steps))
+    s.current_nsteps = s.steps[stage]
+end
+
+mutable struct ScheduledPushforward <: RolloutStrategy
+    steps::Vector{Int}
+    durations::Vector{Int}
+    noise_scale::Float64
+    current_nsteps::Int
+end
+
+"""Fully explicit constructor."""
+function ScheduledPushforward(steps::Vector{Int}, durations::Vector{Int}, noise_scale::Float64)
+    length(steps) == length(durations) || error("steps and durations must have the same length")
+    ScheduledPushforward(steps, durations, noise_scale, steps[1])
+end
+
+"""Uniform schedule: ramps 1:nsteps, each stage lasting step_interval epochs."""
+ScheduledPushforward(nsteps::Int, step_interval::Int, noise_scale::Float64) =
+    ScheduledPushforward(collect(1:nsteps), fill(step_interval, nsteps), noise_scale)
+
+"""Threshold schedule: step increases by 1 at each epoch in epoch_thresholds (length = nsteps-1)."""
+function ScheduledPushforward(epoch_thresholds::Vector{Int}, noise_scale::Float64)
+    n = length(epoch_thresholds) + 1
+    ScheduledPushforward(collect(1:n), [epoch_thresholds[1] - 1; diff(epoch_thresholds); 1], noise_scale)
+end
+
+function step_schedule!(s::ScheduledPushforward, epoch)
+    stage = clamp(searchsortedfirst(cumsum(s.durations), epoch), 1, length(s.steps))
+    s.current_nsteps = s.steps[stage]
+end
 
 strategy_to_dict(s::SingleStepNoise)      = Dict{String,Any}("name" => "SingleStepNoise",      "scale"       => s.scale)
 strategy_to_dict(::NoNoise)               = Dict{String,Any}("name" => "NoNoise")
 strategy_to_dict(s::MultiStepRollout)     = Dict{String,Any}("name" => "MultiStepRollout",     "nsteps"      => s.nsteps,      "noise_scale" => s.noise_scale)
 strategy_to_dict(s::PushforwardRollout)   = Dict{String,Any}("name" => "PushforwardRollout",   "nsteps"      => s.nsteps,      "noise_scale" => s.noise_scale)
-strategy_to_dict(s::ScheduledRollout)     = Dict{String,Any}("name" => "ScheduledRollout",     "nsteps"      => s.nsteps,      "noise_scale" => s.noise_scale)
-strategy_to_dict(s::ScheduledPushforward) = Dict{String,Any}("name" => "ScheduledPushforward", "nsteps"      => s.nsteps,      "noise_scale" => s.noise_scale)
+strategy_to_dict(s::ScheduledRollout)     = Dict{String,Any}("name" => "ScheduledRollout",     "steps" => s.steps, "durations" => s.durations, "noise_scale" => s.noise_scale)
+strategy_to_dict(s::ScheduledPushforward) = Dict{String,Any}("name" => "ScheduledPushforward", "steps" => s.steps, "durations" => s.durations, "noise_scale" => s.noise_scale)
 
 from_dict(::Type{NoNoise},              d) = NoNoise()
 from_dict(::Type{SingleStepNoise},      d) = SingleStepNoise(d["scale"])
 from_dict(::Type{MultiStepRollout},     d) = MultiStepRollout(d["nsteps"], d["noise_scale"])
 from_dict(::Type{PushforwardRollout},   d) = PushforwardRollout(d["nsteps"], d["noise_scale"])
-from_dict(::Type{ScheduledRollout},     d) = ScheduledRollout(identity, d["nsteps"], d["noise_scale"])
-from_dict(::Type{ScheduledPushforward}, d) = ScheduledPushforward(identity, d["nsteps"], d["noise_scale"])
+from_dict(::Type{ScheduledRollout},     d) = ScheduledRollout(Int.(d["steps"]), Int.(d["durations"]), d["noise_scale"])
+from_dict(::Type{ScheduledPushforward}, d) = ScheduledPushforward(Int.(d["steps"]), Int.(d["durations"]), d["noise_scale"])
 
 const _STRATEGY_TYPES = Dict{String,Type{<:TrainStrategy}}(
     "NoNoise"              => NoNoise,
@@ -387,17 +417,11 @@ end
     build_strategy_from_config(d) -> TrainStrategy
 
 Construct a `TrainStrategy` from a config dict (e.g. from a `[[strategies]]` TOML
-section).  For `ScheduledRollout` / `ScheduledPushforward` a `step_interval` key
-(default 50) builds the schedule `epoch -> div(epoch-1, step_interval) + 1`.
+section).
 """
 function build_strategy_from_config(d::Dict)
     name = d["name"]
     T    = get(_STRATEGY_TYPES, name, nothing)
     T === nothing && error("Unknown strategy name: \"$name\"")
-    s = from_dict(T, d)
-    if s isa ScheduledRollout || s isa ScheduledPushforward
-        si = Int(get(d, "step_interval", 50))
-        s.schedule = epoch -> div(epoch - 1, si) + 1
-    end
-    return s
+    return from_dict(T, d)
 end
