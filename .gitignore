@@ -30,5 +30,6 @@ JuliaLocalPreferences.toml
 data/*
 
 models/*
+experiments/*
 
 slurm_logs/*

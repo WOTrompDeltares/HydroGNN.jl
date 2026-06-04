@@ -34,8 +34,7 @@ function save_model_settings(ms::ModelSettings, path::String)
     end
 end
 
-function load_model_settings(path::String)
-    d = TOML.parsefile(path)
+function model_settings_from_dict(d::Dict)
     s = ModelSettings()
     for f in fieldnames(ModelSettings)
         key = string(f)
@@ -43,6 +42,8 @@ function load_model_settings(path::String)
     end
     return s
 end
+
+load_model_settings(path::String) = model_settings_from_dict(TOML.parsefile(path))
 
 struct ResGraphConv <: GNNLayer
     layer

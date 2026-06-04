@@ -382,3 +382,22 @@ function train_settings_from_toml(d::Dict)
     end
     return s
 end
+
+"""
+    build_strategy_from_config(d) -> TrainStrategy
+
+Construct a `TrainStrategy` from a config dict (e.g. from a `[[strategies]]` TOML
+section).  For `ScheduledRollout` / `ScheduledPushforward` a `step_interval` key
+(default 50) builds the schedule `epoch -> div(epoch-1, step_interval) + 1`.
+"""
+function build_strategy_from_config(d::Dict)
+    name = d["name"]
+    T    = get(_STRATEGY_TYPES, name, nothing)
+    T === nothing && error("Unknown strategy name: \"$name\"")
+    s = from_dict(T, d)
+    if s isa ScheduledRollout || s isa ScheduledPushforward
+        si = Int(get(d, "step_interval", 50))
+        s.schedule = epoch -> div(epoch - 1, si) + 1
+    end
+    return s
+end
