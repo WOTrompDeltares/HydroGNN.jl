@@ -31,10 +31,12 @@ function _multistep_batch(nsteps; nnodes=T_NNODES, ndyn=T_NDYN, nstatic=T_NSTATI
     src, dst = _ring_edges(nnodes)
     static  = randn(Float32, nstatic, nnodes)
     forcing = zeros(Float32, 0, nnodes)
+    bc_mask = zeros(Bool, ndyn, nnodes)
     [GNNGraph(src, dst,
               ndata=(; static=static,
                        dynamic=randn(Float32, ndyn, nnodes),
-                       forcing=forcing))
+                       forcing=forcing,
+                       bc_mask=bc_mask))
      for _ in 1:(nsteps + 1)]
 end
 

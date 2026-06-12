@@ -254,6 +254,7 @@ for (ind, (tau_amp, tau_period_h, tide_amp)) in enumerate(Iterators.product(tau_
             grp["n_nodes"]       = size(mesh_pos, 2)
             grp["forcing"]       = forcing
             grp["bound_cond"]    = bound_cond
+            grp["bc_dyn_indices"] = Int32[1]   # row 1 of bound_cond → dynamic feature 1 (waterlevel)
         end
     end
 

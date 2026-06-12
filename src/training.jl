@@ -177,6 +177,23 @@ function compute_loss(::NoNoise, model, batch, device)
     return batch_loss, grad[1], batch_loss
 end
 
+# Override predicted dynamic state at BC-prescribed positions with ground-truth values.
+# bc_mask is (ndyn × nnodes) Bool — all-false for datasets without BCs (no-op).
+function _bc_override(dyn_pred, dyn_target, bc_mask)
+    any(bc_mask) || return dyn_pred
+    out = copy(dyn_pred)
+    out[bc_mask] .= dyn_target[bc_mask]
+    return out
+end
+
+# MSE excluding BC-prescribed positions so the model is not penalized for them.
+function _masked_mse(yhat, target, bc_mask)
+    any(bc_mask) || return Flux.mse(yhat, target)
+    interior = .!bc_mask
+    diff = yhat[interior] .- target[interior]
+    return mean(diff .^ 2)
+end
+
 function compute_loss(strategy::MultiStepRollout, model, batch, device)
     x_seq = batch  # Vector{GNNGraph} of length nsteps+1
 
@@ -194,9 +211,10 @@ function compute_loss(strategy::MultiStepRollout, model, batch, device)
             g_k = Flux.ignore_derivatives() do
                 GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
             end
-            yhat_k = m(g_k)
-            total_loss += Flux.mse(yhat_k, x_seq[k+1].ndata.dynamic)
-            dyn_cur = yhat_k
+            yhat_k  = m(g_k)
+            bc_mask = x_seq[k+1].ndata.bc_mask
+            total_loss += _masked_mse(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask)
+            dyn_cur = Flux.ignore_derivatives(() -> _bc_override(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask))
         end
         total_loss / strategy.nsteps
     end
@@ -215,14 +233,17 @@ function compute_loss(strategy::PushforwardRollout, model, batch, device)
         if strategy.noise_scale > 0
             dyn_cur = dyn_cur .+ (Float32(strategy.noise_scale) .* randn(Float32, size(dyn_cur)) |> device)
         end
-        g_k = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
-        dyn_cur = Flux.ignore_derivatives(() -> model(g_k))
+        g_k     = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
+        yhat_k  = Flux.ignore_derivatives(() -> model(g_k))
+        bc_mask = x_seq[k+1].ndata.bc_mask
+        dyn_cur = _bc_override(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask)
     end
 
     # Final step: single gradient computation
-    g_last = GNNGraph(x_seq[end-1], ndata=(; x_seq[end-1].ndata..., dynamic=dyn_cur))
+    g_last  = GNNGraph(x_seq[end-1], ndata=(; x_seq[end-1].ndata..., dynamic=dyn_cur))
+    bc_mask = x_seq[end].ndata.bc_mask
     batch_loss, grad = Flux.withgradient(model) do m
-        Flux.mse(m(g_last), x_seq[end].ndata.dynamic)
+        _masked_mse(m(g_last), x_seq[end].ndata.dynamic, bc_mask)
     end
     return batch_loss, grad[1], noiseless_loss
 end
@@ -237,13 +258,16 @@ function compute_loss(strategy::ScheduledPushforward, model, batch, device)
         if strategy.noise_scale > 0
             dyn_cur = dyn_cur .+ (Float32(strategy.noise_scale) .* randn(Float32, size(dyn_cur)) |> device)
         end
-        g_k = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
-        dyn_cur = Flux.ignore_derivatives(() -> model(g_k))
+        g_k     = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
+        yhat_k  = Flux.ignore_derivatives(() -> model(g_k))
+        bc_mask = x_seq[k+1].ndata.bc_mask
+        dyn_cur = _bc_override(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask)
     end
 
-    g_last = GNNGraph(x_seq[nsteps], ndata=(; x_seq[nsteps].ndata..., dynamic=dyn_cur))
+    g_last  = GNNGraph(x_seq[nsteps], ndata=(; x_seq[nsteps].ndata..., dynamic=dyn_cur))
+    bc_mask = x_seq[nsteps+1].ndata.bc_mask
     batch_loss, grad = Flux.withgradient(model) do m
-        Flux.mse(m(g_last), x_seq[nsteps+1].ndata.dynamic)
+        _masked_mse(m(g_last), x_seq[nsteps+1].ndata.dynamic, bc_mask)
     end
     return batch_loss, grad[1], noiseless_loss
 end
@@ -262,9 +286,10 @@ function compute_loss(strategy::ScheduledRollout, model, batch, device)
             g_k = Flux.ignore_derivatives() do
                 GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
             end
-            yhat_k = m(g_k)
-            total_loss += Flux.mse(yhat_k, x_seq[k+1].ndata.dynamic)
-            dyn_cur = yhat_k
+            yhat_k  = m(g_k)
+            bc_mask = x_seq[k+1].ndata.bc_mask
+            total_loss += _masked_mse(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask)
+            dyn_cur = Flux.ignore_derivatives(() -> _bc_override(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask))
         end
         total_loss / nsteps
     end
@@ -286,10 +311,11 @@ function compute_val_loss(strategy::MultiStepRollout, model, batch, device)
     dyn_cur    = x_seq[1].ndata.dynamic
     total_loss = 0.0f0
     for k in 1:strategy.nsteps
-        g_k    = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
-        yhat_k = model(g_k)
-        total_loss += Flux.mse(yhat_k, x_seq[k+1].ndata.dynamic)
-        dyn_cur = yhat_k
+        g_k     = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
+        yhat_k  = model(g_k)
+        bc_mask = x_seq[k+1].ndata.bc_mask
+        total_loss += _masked_mse(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask)
+        dyn_cur = _bc_override(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask)
     end
     return total_loss / strategy.nsteps, loss_1step
 end
@@ -300,10 +326,13 @@ function compute_val_loss(strategy::PushforwardRollout, model, batch, device)
     dyn_cur    = x_seq[1].ndata.dynamic
     for k in 1:(strategy.nsteps - 1)
         g_k     = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
-        dyn_cur = model(g_k)
+        yhat_k  = model(g_k)
+        bc_mask = x_seq[k+1].ndata.bc_mask
+        dyn_cur = _bc_override(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask)
     end
-    g_last = GNNGraph(x_seq[end-1], ndata=(; x_seq[end-1].ndata..., dynamic=dyn_cur))
-    return Flux.mse(model(g_last), x_seq[end].ndata.dynamic), loss_1step
+    g_last  = GNNGraph(x_seq[end-1], ndata=(; x_seq[end-1].ndata..., dynamic=dyn_cur))
+    bc_mask = x_seq[end].ndata.bc_mask
+    return _masked_mse(model(g_last), x_seq[end].ndata.dynamic, bc_mask), loss_1step
 end
 
 function compute_val_loss(strategy::ScheduledRollout, model, batch, device)
@@ -313,10 +342,11 @@ function compute_val_loss(strategy::ScheduledRollout, model, batch, device)
     dyn_cur    = x_seq[1].ndata.dynamic
     total_loss = 0.0f0
     for k in 1:nsteps
-        g_k    = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
-        yhat_k = model(g_k)
-        total_loss += Flux.mse(yhat_k, x_seq[k+1].ndata.dynamic)
-        dyn_cur = yhat_k
+        g_k     = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
+        yhat_k  = model(g_k)
+        bc_mask = x_seq[k+1].ndata.bc_mask
+        total_loss += _masked_mse(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask)
+        dyn_cur = _bc_override(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask)
     end
     return total_loss / nsteps, loss_1step
 end
@@ -328,10 +358,13 @@ function compute_val_loss(strategy::ScheduledPushforward, model, batch, device)
     dyn_cur    = x_seq[1].ndata.dynamic
     for k in 1:(nsteps - 1)
         g_k     = GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
-        dyn_cur = model(g_k)
+        yhat_k  = model(g_k)
+        bc_mask = x_seq[k+1].ndata.bc_mask
+        dyn_cur = _bc_override(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask)
     end
-    g_last = GNNGraph(x_seq[nsteps], ndata=(; x_seq[nsteps].ndata..., dynamic=dyn_cur))
-    return Flux.mse(model(g_last), x_seq[nsteps+1].ndata.dynamic), loss_1step
+    g_last  = GNNGraph(x_seq[nsteps], ndata=(; x_seq[nsteps].ndata..., dynamic=dyn_cur))
+    bc_mask = x_seq[nsteps+1].ndata.bc_mask
+    return _masked_mse(model(g_last), x_seq[nsteps+1].ndata.dynamic, bc_mask), loss_1step
 end
 
 Base.@kwdef mutable struct TrainSettings

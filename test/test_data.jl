@@ -9,7 +9,7 @@ const DATA_TEST_FILE = joinpath(@__DIR__, "..", "test_data", "lake1d_surge", "tr
 # ─── read_trajectory ──────────────────────────────────────────────────────────
 
 @testset "read_trajectory returns correct types and shapes" begin
-    velocity, waterlevel, mesh_pos, node_type, bathymetry, edges, tau =
+    velocity, waterlevel, mesh_pos, node_type, bathymetry, edges, tau, bound_cond, bc_dyn_indices =
         HydroGNN.read_trajectory(DATA_TEST_FILE, 1)
 
     @test velocity   isa Matrix
@@ -20,10 +20,13 @@ const DATA_TEST_FILE = joinpath(@__DIR__, "..", "test_data", "lake1d_surge", "tr
     @test edges      isa Matrix
     @test size(edges, 1) == 2                          # rows = [src; dst]
     @test size(velocity, 1) == size(waterlevel, 1) == length(mesh_pos)
+    # lake1d_surge test data has no bound_cond / bc_dyn_indices
+    @test bound_cond     === nothing
+    @test bc_dyn_indices === nothing
 end
 
 @testset "read_trajectory edges are bidirected" begin
-    _, _, _, _, _, edges, _ = HydroGNN.read_trajectory(DATA_TEST_FILE, 1)
+    _, _, _, _, _, edges, _, _, _ = HydroGNN.read_trajectory(DATA_TEST_FILE, 1)
     n = size(edges, 2)
     @test iseven(n)                                    # forward + reverse pairs
     src, dst = edges[1, :], edges[2, :]
@@ -52,6 +55,8 @@ end
     @test size(g.ndata.dynamic, 1)  == 2    # waterlevel + velocity
     @test size(g.ndata.static, 1)   == 8    # bath + pos + 6 one-hot
     @test size(g.ndata.forcing, 1)  == 1    # tau present in lake1d_surge
+    @test size(g.ndata.bc_mask)     == (2, g.num_nodes)  # bc_mask always present
+    @test !any(g.ndata.bc_mask)             # no BCs in lake1d_surge
     @test eltype(g.ndata.dynamic)   == Float32
     @test eltype(g.ndata.static)    == Float32
 end
@@ -63,6 +68,8 @@ end
     @test size(g.ndata.dynamic, 1) == 2
     @test size(g.ndata.static, 1)  == 8
     @test size(g.ndata.forcing, 1) == 1
+    @test size(g.ndata.bc_mask)    == (2, g.num_nodes)
+    @test !any(g.ndata.bc_mask)
 end
 
 # ─── load_data_multistep ──────────────────────────────────────────────────────

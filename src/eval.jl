@@ -8,7 +8,8 @@ function predict_trajectory(fn, traj_ind::Int, model, norm_strategy::NormStrateg
 
     model = model |> device
 
-    velocity, waterlevel, mesh_pos, node_type, bathymetry, edges, tau = read_trajectory(fn, traj_ind)
+    velocity, waterlevel, mesh_pos, node_type, bathymetry, edges, tau, bound_cond, bc_dyn_indices =
+        read_trajectory(fn, traj_ind)
     nsteps = size(velocity, 2) - 1
 
     bathymetry .= (bathymetry .- mean(bathymetry)) ./ std(bathymetry)
@@ -30,22 +31,51 @@ function predict_trajectory(fn, traj_ind::Int, model, norm_strategy::NormStrateg
     _forc(t) = has_tau ? reshape(_n(tau[:,t], mu_t, s_t), 1, nnodes) :
                          zeros(Float32, 0, nnodes)
 
-    # Pre-compute all forcing arrays and move to device as a batch (no transfers inside loop)
-    forcings_dev = [_forc(t) |> device for t in 1:nsteps+1]
+    # Build BC mask and per-step normalized BC values for the override
+    bc_node_ids = findall(node_type .== 1)
+    bc_mask     = _make_bc_mask(2, nnodes, bc_node_ids, bc_dyn_indices)
+    has_bc      = any(bc_mask)
 
-    # Build one template graph and move to device once — carries edge indices and static
+    # Normalize bound_cond using stats of the targeted dynamic variable(s)
+    dyn_stats = [(ns.mu[i], ns.sigma[i]) for i in 1:2]  # indexed by dynamic feature row
+    function _norm_bc(t)
+        bound_cond === nothing && return zeros(Float32, 2, nnodes)
+        out = zeros(Float32, 2, nnodes)
+        for (row, dyn_row) in enumerate(bc_dyn_indices)
+            mu_d, s_d = dyn_stats[dyn_row]
+            for (col, nid) in enumerate(bc_node_ids)
+                out[dyn_row, nid] = _n(bound_cond[row, t], mu_d, s_d)
+            end
+        end
+        return out
+    end
+
+    # Pre-compute all forcing and BC arrays; move to device as a batch
+    forcings_dev = [_forc(t) |> device for t in 1:nsteps+1]
+    bc_vals_dev  = has_bc ? [_norm_bc(t) |> device for t in 1:nsteps+1] : nothing
+    bc_mask_dev  = bc_mask |> device
+
+    # Build one template graph and move to device once
     dyn0     = hcat(_n(waterlevel[:,1], mu_wl, s_wl), _n(velocity[:,1], mu_v, s_v))'
     template = GNNGraph(Int64.(edges[1,:]), Int64.(edges[2,:]),
-                        ndata=(; static=data_static', dynamic=dyn0, forcing=_forc(1))) |> device
-    static_dev = template.ndata.static  # reused every step, already on device
+                        ndata=(; static=data_static', dynamic=dyn0,
+                                forcing=_forc(1), bc_mask=bc_mask)) |> device
+    static_dev = template.ndata.static
 
-    # Rollout entirely on device — zero CPU↔GPU transfers inside the loop
+    # Rollout entirely on device
     dyn_cur      = template.ndata.dynamic
     pred_dyn_dev = Vector{AbstractMatrix{Float32}}(undef, nsteps + 1)
     pred_dyn_dev[1] = dyn_cur
     for ii in 1:nsteps
-        g_k     = GNNGraph(template, ndata=(; static=static_dev, dynamic=dyn_cur, forcing=forcings_dev[ii]))
+        g_k     = GNNGraph(template, ndata=(; static=static_dev, dynamic=dyn_cur,
+                                              forcing=forcings_dev[ii], bc_mask=bc_mask_dev))
         dyn_cur = model(g_k)
+        # Apply BC override: replace predicted values at prescribed positions
+        if has_bc
+            bc_next = bc_vals_dev[ii+1]
+            dyn_cur = copy(dyn_cur)
+            dyn_cur[bc_mask_dev] .= bc_next[bc_mask_dev]
+        end
         pred_dyn_dev[ii+1] = dyn_cur
     end
 
@@ -59,13 +89,15 @@ function predict_trajectory(fn, traj_ind::Int, model, norm_strategy::NormStrateg
     edges_src = Int64.(edges[1,:])
     edges_dst = Int64.(edges[2,:])
     make_graph(dyn, t) = GNNGraph(edges_src, edges_dst,
-                                  ndata=(; static=data_static', dynamic=dyn, forcing=_forc(t)))
+                                  ndata=(; static=data_static', dynamic=dyn,
+                                          forcing=_forc(t), bc_mask=bc_mask))
 
     function denorm_graph(g)
         dyn_phys  = hcat(_d(g.ndata.dynamic[1,:], mu_wl, s_wl),
                          _d(g.ndata.dynamic[2,:], mu_v,  s_v))'
         forc_phys = _d(g.ndata.forcing, mu_t, s_t)
-        return GNNGraph(g, ndata=(; static=g.ndata.static, dynamic=dyn_phys, forcing=forc_phys))
+        return GNNGraph(g, ndata=(; static=g.ndata.static, dynamic=dyn_phys, forcing=forc_phys,
+                                    bc_mask=g.ndata.bc_mask))
     end
 
     gt   = denorm_graph.([make_graph(gt_dyn[t],   t) for t in 1:nsteps+1])
