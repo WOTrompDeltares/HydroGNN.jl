@@ -230,7 +230,7 @@ function compute_loss(strategy::PushforwardRollout, model, batch, device)
         end
         yhat_k  = Flux.ignore_derivatives(() -> model(g_k))
         bc_mask = x_seq[k+1].ndata.bc_mask
-        dyn_cur = _bc_override(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask)
+        dyn_cur = Flux.ignore_derivatives(() -> _bc_override(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask))
     end
     g_last  = Flux.ignore_derivatives() do
         GNNGraph(x_seq[end-1], ndata=(; x_seq[end-1].ndata..., dynamic=dyn_cur))
@@ -253,7 +253,7 @@ function compute_loss(strategy::ScheduledPushforward, model, batch, device)
         end
         yhat_k  = Flux.ignore_derivatives(() -> model(g_k))
         bc_mask = x_seq[k+1].ndata.bc_mask
-        dyn_cur = _bc_override(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask)
+        dyn_cur = Flux.ignore_derivatives(() -> _bc_override(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask))
     end
     g_last  = Flux.ignore_derivatives() do
         GNNGraph(x_seq[nsteps], ndata=(; x_seq[nsteps].ndata..., dynamic=dyn_cur))
