@@ -23,6 +23,7 @@ StatsBase = "2913bbd2-ae8a-5f71-8c99-4fb6c76f3a91"
 TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 cuDNN = "02a925ec-e4fe-4b08-9a7e-0d78e3d38ccd"
+Zygote = "e88e6eb3-aa80-5325-afca-941959d7151f"
 
 [compat]
 CSV = "0.10.16"

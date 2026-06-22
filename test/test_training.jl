@@ -1,6 +1,7 @@
 using Test
 using HydroGNN
 using Flux
+using Zygote
 using GraphNeuralNetworks
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -143,39 +144,42 @@ end
 
 # ─── compute_loss: single-step strategies ─────────────────────────────────────
 
-@testset "compute_loss NoNoise: matches direct MSE, noiseless==loss" begin
+@testset "compute_loss NoNoise: matches direct MSE, loss_1step==loss" begin
     model    = _small_model()
     x, y     = _single_step_batch()
     expected = Flux.mse(model(x), y.x)
 
-    loss, grad, noiseless = HydroGNN.compute_loss(NoNoise(), model, (x, y), Flux.cpu)
+    loss, loss_1step = HydroGNN.compute_loss(NoNoise(), model, (x, y), Flux.cpu)
 
-    @test loss      isa AbstractFloat
-    @test loss      >= 0
-    @test loss      ≈  expected
-    @test noiseless ≈  loss        # NoNoise: noiseless_loss == batch_loss
-    @test grad      !== nothing
+    @test loss       isa AbstractFloat
+    @test loss       >= 0
+    @test loss       ≈  expected
+    @test loss_1step ≈  loss
+    grad, = Zygote.gradient(m -> first(HydroGNN.compute_loss(NoNoise(), m, (x, y), Flux.cpu)), model)
+    @test grad !== nothing
 end
 
-@testset "compute_loss SingleStepNoise scale=0: noiseless≈batch loss" begin
-    model                 = _small_model()
-    x, y                  = _single_step_batch()
-    loss, grad, noiseless = HydroGNN.compute_loss(SingleStepNoise(0.0), model, (x, y), Flux.cpu)
+@testset "compute_loss SingleStepNoise scale=0: loss_1step≈loss" begin
+    model            = _small_model()
+    x, y             = _single_step_batch()
+    loss, loss_1step = HydroGNN.compute_loss(SingleStepNoise(0.0), model, (x, y), Flux.cpu)
 
-    @test loss      >= 0
-    @test noiseless >= 0
-    @test grad      !== nothing
-    @test noiseless ≈ loss   # zero noise → dynamic unchanged
+    @test loss       >= 0
+    @test loss_1step >= 0
+    @test loss_1step ≈ loss   # zero noise → same graph
+    grad, = Zygote.gradient(m -> first(HydroGNN.compute_loss(SingleStepNoise(0.0), m, (x, y), Flux.cpu)), model)
+    @test grad !== nothing
 end
 
 @testset "compute_loss SingleStepNoise scale>0: valid loss and gradients" begin
-    model                 = _small_model()
-    x, y                  = _single_step_batch()
-    loss, grad, noiseless = HydroGNN.compute_loss(SingleStepNoise(1.0), model, (x, y), Flux.cpu)
+    model            = _small_model()
+    x, y             = _single_step_batch()
+    loss, loss_1step = HydroGNN.compute_loss(SingleStepNoise(1.0), model, (x, y), Flux.cpu)
 
-    @test loss      >= 0
-    @test noiseless >= 0
-    @test grad      !== nothing
+    @test loss       >= 0
+    @test loss_1step >= 0
+    grad, = Zygote.gradient(m -> first(HydroGNN.compute_loss(SingleStepNoise(1.0), m, (x, y), Flux.cpu)), model)
+    @test grad !== nothing
 end
 
 # ─── compute_loss: multi-step rollout strategies ──────────────────────────────
@@ -185,11 +189,12 @@ end
     x_seq = _multistep_batch(1)
     strat = MultiStepRollout(1, 0.0)
 
-    loss, grad, noiseless = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
+    loss, loss_1step = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
 
     expected = Flux.mse(model(x_seq[1]), x_seq[2].ndata.dynamic)
-    @test loss      ≈ expected
-    @test noiseless ≈ expected
+    @test loss       ≈ expected
+    @test loss_1step ≈ expected
+    grad, = Zygote.gradient(m -> first(HydroGNN.compute_loss(strat, m, x_seq, Flux.cpu)), model)
     @test grad !== nothing
 end
 
@@ -198,10 +203,11 @@ end
     x_seq = _multistep_batch(2)
     strat = MultiStepRollout(2, 0.0)
 
-    loss, grad, noiseless = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
+    loss, loss_1step = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
 
-    @test loss      >= 0
-    @test noiseless >= 0
+    @test loss       >= 0
+    @test loss_1step >= 0
+    grad, = Zygote.gradient(m -> first(HydroGNN.compute_loss(strat, m, x_seq, Flux.cpu)), model)
     @test grad !== nothing
 end
 
@@ -210,12 +216,12 @@ end
     x_seq = _multistep_batch(1)
     strat = PushforwardRollout(1, 0.0)
 
-    loss, grad, noiseless = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
+    loss, loss_1step = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
 
-    # nsteps=1: warm-up loop is skipped; gradient step uses x_seq[end-1]→x_seq[end]
     expected = Flux.mse(model(x_seq[1]), x_seq[2].ndata.dynamic)
-    @test loss      ≈ expected
-    @test noiseless ≈ expected
+    @test loss       ≈ expected
+    @test loss_1step ≈ expected
+    grad, = Zygote.gradient(m -> first(HydroGNN.compute_loss(strat, m, x_seq, Flux.cpu)), model)
     @test grad !== nothing
 end
 
@@ -224,10 +230,11 @@ end
     x_seq = _multistep_batch(3)
     strat = PushforwardRollout(3, 0.0)
 
-    loss, grad, noiseless = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
+    loss, loss_1step = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
 
-    @test loss      >= 0
-    @test noiseless >= 0
+    @test loss       >= 0
+    @test loss_1step >= 0
+    grad, = Zygote.gradient(m -> first(HydroGNN.compute_loss(strat, m, x_seq, Flux.cpu)), model)
     @test grad !== nothing
 end
 
@@ -236,15 +243,17 @@ end
     strat = ScheduledRollout(3, 5, 0.0)   # stages 1,2,3 each 5 epochs; starts at 1
     x_seq = _multistep_batch(3)           # length 4
 
-    loss1, grad1, _ = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
+    loss1, _ = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
     @test loss1 >= 0
+    grad1, = Zygote.gradient(m -> first(HydroGNN.compute_loss(strat, m, x_seq, Flux.cpu)), model)
     @test grad1 !== nothing
 
     HydroGNN.step_schedule!(strat, 6)     # epoch 6 → stage 2 → current_nsteps=2
     @test strat.current_nsteps == 2
 
-    loss2, grad2, _ = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
+    loss2, _ = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
     @test loss2 >= 0
+    grad2, = Zygote.gradient(m -> first(HydroGNN.compute_loss(strat, m, x_seq, Flux.cpu)), model)
     @test grad2 !== nothing
 end
 
@@ -253,15 +262,17 @@ end
     strat = ScheduledPushforward(3, 5, 0.0)   # starts at current_nsteps=1
     x_seq = _multistep_batch(3)               # length 4
 
-    loss1, grad1, _ = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
+    loss1, _ = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
     @test loss1 >= 0
+    grad1, = Zygote.gradient(m -> first(HydroGNN.compute_loss(strat, m, x_seq, Flux.cpu)), model)
     @test grad1 !== nothing
 
     HydroGNN.step_schedule!(strat, 6)     # epoch 6 → stage 2 → current_nsteps=2
     @test strat.current_nsteps == 2
 
-    loss2, grad2, _ = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
+    loss2, _ = HydroGNN.compute_loss(strat, model, x_seq, Flux.cpu)
     @test loss2 >= 0
+    grad2, = Zygote.gradient(m -> first(HydroGNN.compute_loss(strat, m, x_seq, Flux.cpu)), model)
     @test grad2 !== nothing
 end
 

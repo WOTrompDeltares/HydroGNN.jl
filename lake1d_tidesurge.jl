@@ -144,7 +144,7 @@ tau(t) = tau_func(t, 0.5, 3600.0)
 # Data generation
 ####################
 
-datadir = "data/lake1d_tidesurge"
+datadir = "data/lake1d_tidesurge_small"
 if !isdir(datadir)
     mkpath(datadir)
 end
@@ -169,9 +169,9 @@ D_center = Float32.(depth_profile(grid_h, D_min, D_max, D_edges, D_widths))
 W = 100.0
 C = 60.0
 
-# Timing: 96 h total, first 4 h spin-up discarded
+# Timing: 48 h total, first 4 h spin-up discarded
 t_start    = 0.0
-t_end      = 96 * 3600.0
+t_end      = 48 * 3600.0
 spin_up    = 4  * 3600.0
 dt_out     = 60.0
 times_save = spin_up:dt_out:t_end
@@ -192,7 +192,7 @@ n_bc_nodes = sum(node_type .== 1)   # 1 for this domain
 # Sweep parameters
 tau_amps    = [0.0, 0.25, 0.5, 1.0]
 tau_periods = [1.0, 3.0, 6.0]      # hours
-tide_amps   = [0.0, 0.1, 0.5, 1.0]
+tide_amps   = [0.0, 0.5, 1.0]
 
 n_traj = length(Iterators.product(tau_amps, tau_periods, tide_amps))
 @info "Total trajectories: $n_traj"
