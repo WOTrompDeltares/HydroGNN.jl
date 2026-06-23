@@ -4,6 +4,7 @@ using JLD2
 using ProgressMeter
 using ParameterSchedulers
 using TOML
+using Random
 
 abstract type TrainStrategy end
 abstract type RolloutStrategy <: TrainStrategy end
@@ -168,7 +169,7 @@ function compute_loss(strategy::SingleStepNoise, model, batch, device)
     if strategy.scale > 0
         x = Flux.ignore_derivatives() do
             GNNGraph(x, ndata=(; x.ndata...,
-                                dynamic=x.ndata.dynamic .+ Float32(strategy.scale) .* randn(Float32, size(x.ndata.dynamic)) |> device))
+                                dynamic=x.ndata.dynamic .+ Float32(strategy.scale) .* randn!(similar(x.ndata.dynamic))))
         end
     end
     return Flux.mse(model(x), y.x), loss_1step
@@ -204,7 +205,7 @@ function compute_loss(strategy::MultiStepRollout, model, batch, device)
     total_loss = 0.0f0
     for k in 1:strategy.nsteps
         if strategy.noise_scale > 0
-            dyn_cur = dyn_cur .+ (Float32(strategy.noise_scale) .* randn(Float32, size(dyn_cur)) |> device)
+            dyn_cur = dyn_cur .+ (Float32(strategy.noise_scale) .* randn!(similar(dyn_cur)))
         end
         g_k = Flux.ignore_derivatives() do
             GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
@@ -223,7 +224,7 @@ function compute_loss(strategy::PushforwardRollout, model, batch, device)
     dyn_cur    = x_seq[1].ndata.dynamic
     for k in 1:(strategy.nsteps - 1)
         if strategy.noise_scale > 0
-            dyn_cur = dyn_cur .+ (Float32(strategy.noise_scale) .* randn(Float32, size(dyn_cur)) |> device)
+            dyn_cur = dyn_cur .+ (Float32(strategy.noise_scale) .* randn!(similar(dyn_cur)))
         end
         g_k     = Flux.ignore_derivatives() do
             GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
@@ -246,7 +247,7 @@ function compute_loss(strategy::ScheduledPushforward, model, batch, device)
     dyn_cur    = x_seq[1].ndata.dynamic
     for k in 1:(nsteps - 1)
         if strategy.noise_scale > 0
-            dyn_cur = dyn_cur .+ (Float32(strategy.noise_scale) .* randn(Float32, size(dyn_cur)) |> device)
+            dyn_cur = dyn_cur .+ (Float32(strategy.noise_scale) .* randn!(similar(dyn_cur)))
         end
         g_k     = Flux.ignore_derivatives() do
             GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))
@@ -270,7 +271,7 @@ function compute_loss(strategy::ScheduledRollout, model, batch, device)
     total_loss = 0.0f0
     for k in 1:nsteps
         if strategy.noise_scale > 0
-            dyn_cur = dyn_cur .+ (Float32(strategy.noise_scale) .* randn(Float32, size(dyn_cur)) |> device)
+            dyn_cur = dyn_cur .+ (Float32(strategy.noise_scale) .* randn!(similar(dyn_cur)))
         end
         g_k = Flux.ignore_derivatives() do
             GNNGraph(x_seq[k], ndata=(; x_seq[k].ndata..., dynamic=dyn_cur))

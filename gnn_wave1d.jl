@@ -23,16 +23,16 @@ end
 
 settings = TrainSettings()
 settings.model_name       = "test_gpu_rollout"
-settings.nepochs          = 5
-settings.nbatch           = 32
-settings.save_dir         = "models/lake1d_surge"
-settings.train_data_path  = "data/lake1d_surge/train.jld2"
-settings.valid_data_path  = "data/lake1d_surge/valid.jld2"
+settings.nepochs          = 2
+settings.nbatch           = 128
+settings.save_dir         = "models/lake1d_tidesurge_test"
+settings.train_data_path  = "data/lake1d_tidesurge_small/train.jld2"
+settings.valid_data_path  = "data/lake1d_tidesurge_small/valid.jld2"
 
 model_settings = ModelSettings()
-model_settings.skip_connections = true
-model_settings.dhidden          = 16
-model_settings.nhidden          = 5
+model_settings.skip_connections = false
+model_settings.dhidden          = 128
+model_settings.nhidden          = 3
 
 norm_strategy  = GlobalNorm(compute_norm_stats(settings.train_data_path))  # or: PerTrajectoryNorm()
 train_strategy = SingleStepNoise(3e-2)  # or: NoNoise(), MultiStepRollout(5, 0.0), PushforwardRollout(5, 0.0)
@@ -61,6 +61,8 @@ model_settings.dout = dout
 model = GNN(model_settings.din, model_settings.dhidden, model_settings.dout, model_settings.nhidden; skip=model_settings.skip_connections)
 
 model(val_x[1])
+
+HydroGNN.compute_loss(train_strategy, model |> device, first(dl_train) |> device, device)
 
 # %%
 
