@@ -161,6 +161,31 @@ function Base.show(io::IO, ::MIME"text/plain", s::TrainStrategy)
     end
 end
 
+# Precomputed BC diagnostic indices — built once from bc_mask, reused every batch.
+# Avoids repeated Array(bc_mask) + findall on GPU arrays.
+struct BCDiagIndices
+    has_bc::Bool
+    adj_cols::Vector{Int}  # interior columns adjacent to BC nodes
+    bc_cols::Vector{Int}   # BC node columns (for gradient)
+    nnodes::Int
+end
+
+function BCDiagIndices(bc_mask::AbstractMatrix{Bool})
+    if !any(bc_mask)
+        return BCDiagIndices(false, Int[], Int[], size(bc_mask, 2))
+    end
+    nnodes   = size(bc_mask, 2)
+    mask_cpu = bc_mask isa Array ? bc_mask : Array(bc_mask)
+    bc_cols  = sort(unique([ci[2] for ci in findall(mask_cpu)]))
+    adj_set  = Set{Int}()
+    for c in bc_cols
+        c > 1      && push!(adj_set, c - 1)
+        c < nnodes && push!(adj_set, c + 1)
+    end
+    adj_cols = sort(collect(setdiff(adj_set, Set(bc_cols))))
+    return BCDiagIndices(true, adj_cols, bc_cols, nnodes)
+end
+
 # Returns (strategy_loss, loss_1step, bc_adj_loss, bc_grad_loss).
 # Gradients flow only through strategy_loss; all diagnostics are wrapped in ignore_derivatives.
 function compute_loss(strategy::SingleStepNoise, model, batch, device; bc_diag::Union{BCDiagIndices,Nothing}=nothing)
@@ -190,30 +215,7 @@ function compute_loss(::NoNoise, model, batch, device; bc_diag::Union{BCDiagIndi
     return loss, Flux.ignore_derivatives(() -> loss), bc_adj, bc_grad
 end
 
-# Precomputed BC diagnostic indices — built once from bc_mask, reused every batch.
-# Avoids repeated Array(bc_mask) + findall on GPU arrays.
-struct BCDiagIndices
-    has_bc::Bool
-    adj_cols::Vector{Int}  # interior columns adjacent to BC nodes
-    bc_cols::Vector{Int}   # BC node columns (for gradient)
-    nnodes::Int
-end
 
-function BCDiagIndices(bc_mask::AbstractMatrix{Bool})
-    if !any(bc_mask)
-        return BCDiagIndices(false, Int[], Int[], size(bc_mask, 2))
-    end
-    nnodes   = size(bc_mask, 2)
-    mask_cpu = bc_mask isa Array ? bc_mask : Array(bc_mask)
-    bc_cols  = sort(unique([ci[2] for ci in findall(mask_cpu)]))
-    adj_set  = Set{Int}()
-    for c in bc_cols
-        c > 1      && push!(adj_set, c - 1)
-        c < nnodes && push!(adj_set, c + 1)
-    end
-    adj_cols = sort(collect(setdiff(adj_set, Set(bc_cols))))
-    return BCDiagIndices(true, adj_cols, bc_cols, nnodes)
-end
 
 # MSE at cells immediately adjacent to each BC node (first interior neighbours).
 # Returns 0 when there are no BC nodes.
