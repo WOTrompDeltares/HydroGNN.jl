@@ -161,29 +161,30 @@ function Base.show(io::IO, ::MIME"text/plain", s::TrainStrategy)
     end
 end
 
-# Precomputed BC diagnostic indices — built once from bc_mask, reused every batch.
-# Avoids repeated Array(bc_mask) + findall on GPU arrays.
+# Precomputed BC diagnostic indices — built once from a SINGLE GRAPH's bc_mask.
+# Stores per-graph column indices; diagnostic functions tile them to match the
+# actual batch size at call time, so they work for any batch size including the last.
 struct BCDiagIndices
     has_bc::Bool
-    adj_cols::Vector{Int}  # interior columns adjacent to BC nodes
-    bc_cols::Vector{Int}   # BC node columns (for gradient)
-    nnodes::Int
+    adj_cols_single::Vector{Int}  # adj columns within one graph (1-indexed, 1:N)
+    bc_cols_single::Vector{Int}   # BC columns within one graph
+    nnodes_per_graph::Int         # N: nodes in one graph
 end
 
-function BCDiagIndices(bc_mask::AbstractMatrix{Bool})
-    if !any(bc_mask)
-        return BCDiagIndices(false, Int[], Int[], size(bc_mask, 2))
+function BCDiagIndices(bc_mask_single::AbstractMatrix{Bool})
+    N = size(bc_mask_single, 2)
+    if !any(bc_mask_single)
+        return BCDiagIndices(false, Int[], Int[], N)
     end
-    nnodes   = size(bc_mask, 2)
-    mask_cpu = bc_mask isa Array ? bc_mask : Array(bc_mask)
+    mask_cpu = bc_mask_single isa Array ? bc_mask_single : Array(bc_mask_single)
     bc_cols  = sort(unique([ci[2] for ci in findall(mask_cpu)]))
     adj_set  = Set{Int}()
     for c in bc_cols
-        c > 1      && push!(adj_set, c - 1)
-        c < nnodes && push!(adj_set, c + 1)
+        c > 1 && push!(adj_set, c - 1)
+        c < N && push!(adj_set, c + 1)
     end
     adj_cols = sort(collect(setdiff(adj_set, Set(bc_cols))))
-    return BCDiagIndices(true, adj_cols, bc_cols, nnodes)
+    return BCDiagIndices(true, adj_cols, bc_cols, N)
 end
 
 # Returns (strategy_loss, loss_1step, bc_adj_loss, bc_grad_loss).
@@ -218,29 +219,40 @@ end
 
 
 # MSE at cells immediately adjacent to each BC node (first interior neighbours).
+# Tiles single-graph indices to match the actual (possibly partial) batch.
 # Returns 0 when there are no BC nodes.
 function _bc_adjacent_mse(yhat, target, idx::BCDiagIndices)
-    (idx.has_bc && !isempty(idx.adj_cols)) || return 0.0f0
-    diff = yhat[:, idx.adj_cols] .- target[:, idx.adj_cols]
+    (idx.has_bc && !isempty(idx.adj_cols_single)) || return 0.0f0
+    N       = idx.nnodes_per_graph
+    B       = size(yhat, 2) ÷ N
+    cols    = vcat([(idx.adj_cols_single .+ (b-1)*N) for b in 1:B]...)
+    diff    = yhat[:, cols] .- target[:, cols]
     return mean(diff .^ 2)
 end
 
 # MSE of the spatial gradient (one-sided finite difference) at each BC node vs ground truth.
+# Tiles single-graph indices to match the actual (possibly partial) batch.
 # Returns 0 when there are no BC nodes.
 function _bc_gradient_mse(yhat, target, idx::BCDiagIndices)
     idx.has_bc || return 0.0f0
+    N     = idx.nnodes_per_graph
+    B     = size(yhat, 2) ÷ N
     total = 0.0f0
     n     = 0
-    for c in idx.bc_cols
-        if c < idx.nnodes
-            grad_pred = yhat[:, c+1]   .- yhat[:, c]
-            grad_tgt  = target[:, c+1] .- target[:, c]
-        else
-            grad_pred = yhat[:, c]   .- yhat[:, c-1]
-            grad_tgt  = target[:, c] .- target[:, c-1]
+    for b in 1:B
+        offset = (b-1) * N
+        for c in idx.bc_cols_single
+            cg = c + offset
+            if c < N
+                grad_pred = yhat[:, cg+1]   .- yhat[:, cg]
+                grad_tgt  = target[:, cg+1] .- target[:, cg]
+            else
+                grad_pred = yhat[:, cg]   .- yhat[:, cg-1]
+                grad_tgt  = target[:, cg] .- target[:, cg-1]
+            end
+            total += mean((grad_pred .- grad_tgt) .^ 2)
+            n     += 1
         end
-        total += mean((grad_pred .- grad_tgt) .^ 2)
-        n     += 1
     end
     return total / n
 end
@@ -397,12 +409,14 @@ function train_model!(model, dl_train, dl_valid_strategy, device, settings::Trai
     schedule = Step(start=lr, decay=lr_decay, step_sizes=lr_step)
     pr       = Progress(nepochs, desc="Training Progress", showspeed=true)
 
-    # Precompute BC diagnostic indices once from the first training batch.
-    # bc_mask is the same for every batch from the same dataset, so this avoids
-    # repeated Array(bc_mask) + findall on GPU arrays every step.
-    _bc_mask_from_batch(b::Tuple)  = b[1].ndata.bc_mask
-    _bc_mask_from_batch(b::Vector) = b[2].ndata.bc_mask
-    bc_diag = BCDiagIndices(Array(_bc_mask_from_batch(first(dl_train))))
+    # Precompute BC diagnostic indices once from a SINGLE graph's bc_mask.
+    # The DataLoader yields batched graphs (B*N nodes); taking [:, 1:N] from the
+    # first batch gives the per-graph mask regardless of batch size.
+    _first_batch  = first(dl_train)
+    _first_graph  = _first_batch isa Tuple ? _first_batch[1] : _first_batch[1]
+    _N_per_graph  = _first_graph.num_nodes ÷ _first_graph.num_graphs
+    _single_mask  = Array(_first_graph.ndata.bc_mask)[:, 1:_N_per_graph]
+    bc_diag       = BCDiagIndices(_single_mask)
 
     train_loss          = zeros(nepochs)
     valid_loss_strategy = zeros(nepochs)
