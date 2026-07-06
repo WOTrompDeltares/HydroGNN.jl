@@ -1,6 +1,9 @@
 using CairoMakie
 
-function plot_loss(train_loss, noiseless_loss, val_loss, fn; val_loss_1step=nothing)
+function plot_loss(train_loss, noiseless_loss, val_loss, fn;
+                   val_loss_1step=nothing,
+                   val_bc_adj_loss=nothing,
+                   val_bc_grad_loss=nothing)
     fig = Figure()
     ax = Axis(fig[1, 1], xlabel="Epoch", ylabel="MSE Loss", title="Losses", yscale=log10,
         xminorgridvisible=true, yminorgridvisible=true)
@@ -10,6 +13,12 @@ function plot_loss(train_loss, noiseless_loss, val_loss, fn; val_loss_1step=noth
         lines!(ax, 1:length(val_loss_1step), val_loss_1step, color=:orange, linestyle=:dash, label="Val Loss (1-step)")
     end
     lines!(ax, 1:length(noiseless_loss), noiseless_loss, color=:green,  label="Noiseless Loss")
+    if val_bc_adj_loss !== nothing && any(>(0), val_bc_adj_loss)
+        lines!(ax, 1:length(val_bc_adj_loss),  val_bc_adj_loss,  color=:purple, linestyle=:dash, label="Val BC-adjacent")
+    end
+    if val_bc_grad_loss !== nothing && any(>(0), val_bc_grad_loss)
+        lines!(ax, 1:length(val_bc_grad_loss), val_bc_grad_loss, color=:brown,  linestyle=:dot,  label="Val BC-gradient")
+    end
     axislegend(ax, position=:rt)
     display(fig)
     save(fn, fig)

@@ -161,24 +161,72 @@ function Base.show(io::IO, ::MIME"text/plain", s::TrainStrategy)
     end
 end
 
-# Returns (strategy_loss, loss_1step). Gradients are the caller's responsibility via Zygote.pullback.
-# loss_1step is wrapped in Flux.ignore_derivatives so it never accumulates a gradient.
+# Returns (strategy_loss, loss_1step, bc_adj_loss, bc_grad_loss).
+# Gradients flow only through strategy_loss; all diagnostics are wrapped in ignore_derivatives.
 function compute_loss(strategy::SingleStepNoise, model, batch, device)
-    x, y      = batch
-    loss_1step = Flux.ignore_derivatives(() -> Flux.mse(model(x), y.x))
+    x, y    = batch
+    bc_mask = x.ndata.bc_mask
+    loss_1step, bc_adj, bc_grad = Flux.ignore_derivatives() do
+        pred0 = model(x)
+        Flux.mse(pred0, y.x), _bc_adjacent_mse(pred0, y.x, bc_mask), _bc_gradient_mse(pred0, y.x, bc_mask)
+    end
     if strategy.scale > 0
         x = Flux.ignore_derivatives() do
             GNNGraph(x, ndata=(; x.ndata...,
                                 dynamic=x.ndata.dynamic .+ Float32(strategy.scale) .* randn!(similar(x.ndata.dynamic))))
         end
     end
-    return Flux.mse(model(x), y.x), loss_1step
+    return Flux.mse(model(x), y.x), loss_1step, bc_adj, bc_grad
 end
 
 function compute_loss(::NoNoise, model, batch, device)
-    x, y = batch
-    loss = Flux.mse(model(x), y.x)
-    return loss, Flux.ignore_derivatives(() -> loss)
+    x, y    = batch
+    bc_mask = x.ndata.bc_mask
+    loss    = Flux.mse(model(x), y.x)
+    bc_adj, bc_grad = Flux.ignore_derivatives() do
+        pred = model(x)
+        _bc_adjacent_mse(pred, y.x, bc_mask), _bc_gradient_mse(pred, y.x, bc_mask)
+    end
+    return loss, Flux.ignore_derivatives(() -> loss), bc_adj, bc_grad
+end
+
+# MSE at cells immediately adjacent to each BC node (first interior neighbours).
+# Returns 0 when bc_mask is all-false (no-op for non-BC datasets).
+function _bc_adjacent_mse(yhat, target, bc_mask)
+    any(bc_mask) || return 0.0f0
+    nnodes   = size(bc_mask, 2)
+    bc_cols  = unique([ci[2] for ci in findall(bc_mask)])
+    adj_cols = Int[]
+    for c in bc_cols
+        c > 1      && push!(adj_cols, c - 1)
+        c < nnodes && push!(adj_cols, c + 1)
+    end
+    adj_cols = setdiff(unique(adj_cols), bc_cols)
+    isempty(adj_cols) && return 0.0f0
+    diff = yhat[:, adj_cols] .- target[:, adj_cols]
+    return mean(diff .^ 2)
+end
+
+# MSE of the spatial gradient (one-sided finite difference) at each BC node vs ground truth.
+# Returns 0 when bc_mask is all-false.
+function _bc_gradient_mse(yhat, target, bc_mask)
+    any(bc_mask) || return 0.0f0
+    nnodes  = size(bc_mask, 2)
+    bc_cols = unique([ci[2] for ci in findall(bc_mask)])
+    total   = 0.0f0
+    n       = 0
+    for c in bc_cols
+        if c < nnodes
+            grad_pred = yhat[:, c+1]   .- yhat[:, c]
+            grad_tgt  = target[:, c+1] .- target[:, c]
+        else
+            grad_pred = yhat[:, c]   .- yhat[:, c-1]
+            grad_tgt  = target[:, c] .- target[:, c-1]
+        end
+        total += mean((grad_pred .- grad_tgt) .^ 2)
+        n     += 1
+    end
+    return total / n
 end
 
 # Override predicted dynamic state at BC-prescribed positions with ground-truth values.
@@ -199,8 +247,13 @@ function _masked_mse(yhat, target, bc_mask)
 end
 
 function compute_loss(strategy::MultiStepRollout, model, batch, device)
-    x_seq      = batch
-    loss_1step = Flux.ignore_derivatives(() -> Flux.mse(model(x_seq[1]), x_seq[2].ndata.dynamic))
+    x_seq    = batch
+    bc_mask1 = x_seq[2].ndata.bc_mask
+    loss_1step, bc_adj, bc_grad = Flux.ignore_derivatives() do
+        pred0 = model(x_seq[1])
+        tgt0  = x_seq[2].ndata.dynamic
+        Flux.mse(pred0, tgt0), _bc_adjacent_mse(pred0, tgt0, bc_mask1), _bc_gradient_mse(pred0, tgt0, bc_mask1)
+    end
     dyn_cur    = x_seq[1].ndata.dynamic
     total_loss = 0.0f0
     for k in 1:strategy.nsteps
@@ -215,12 +268,17 @@ function compute_loss(strategy::MultiStepRollout, model, batch, device)
         total_loss += _masked_mse(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask)
         dyn_cur = Flux.ignore_derivatives(() -> _bc_override(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask))
     end
-    return total_loss / strategy.nsteps, loss_1step
+    return total_loss / strategy.nsteps, loss_1step, bc_adj, bc_grad
 end
 
 function compute_loss(strategy::PushforwardRollout, model, batch, device)
-    x_seq      = batch
-    loss_1step = Flux.ignore_derivatives(() -> Flux.mse(model(x_seq[1]), x_seq[2].ndata.dynamic))
+    x_seq    = batch
+    bc_mask1 = x_seq[2].ndata.bc_mask
+    loss_1step, bc_adj, bc_grad = Flux.ignore_derivatives() do
+        pred0 = model(x_seq[1])
+        tgt0  = x_seq[2].ndata.dynamic
+        Flux.mse(pred0, tgt0), _bc_adjacent_mse(pred0, tgt0, bc_mask1), _bc_gradient_mse(pred0, tgt0, bc_mask1)
+    end
     dyn_cur    = x_seq[1].ndata.dynamic
     for k in 1:(strategy.nsteps - 1)
         if strategy.noise_scale > 0
@@ -237,12 +295,17 @@ function compute_loss(strategy::PushforwardRollout, model, batch, device)
         GNNGraph(x_seq[end-1], ndata=(; x_seq[end-1].ndata..., dynamic=dyn_cur))
     end
     bc_mask = x_seq[end].ndata.bc_mask
-    return _masked_mse(model(g_last), x_seq[end].ndata.dynamic, bc_mask), loss_1step
+    return _masked_mse(model(g_last), x_seq[end].ndata.dynamic, bc_mask), loss_1step, bc_adj, bc_grad
 end
 
 function compute_loss(strategy::ScheduledPushforward, model, batch, device)
-    x_seq      = batch
-    loss_1step = Flux.ignore_derivatives(() -> Flux.mse(model(x_seq[1]), x_seq[2].ndata.dynamic))
+    x_seq    = batch
+    bc_mask1 = x_seq[2].ndata.bc_mask
+    loss_1step, bc_adj, bc_grad = Flux.ignore_derivatives() do
+        pred0 = model(x_seq[1])
+        tgt0  = x_seq[2].ndata.dynamic
+        Flux.mse(pred0, tgt0), _bc_adjacent_mse(pred0, tgt0, bc_mask1), _bc_gradient_mse(pred0, tgt0, bc_mask1)
+    end
     nsteps     = strategy.current_nsteps
     dyn_cur    = x_seq[1].ndata.dynamic
     for k in 1:(nsteps - 1)
@@ -260,12 +323,17 @@ function compute_loss(strategy::ScheduledPushforward, model, batch, device)
         GNNGraph(x_seq[nsteps], ndata=(; x_seq[nsteps].ndata..., dynamic=dyn_cur))
     end
     bc_mask = x_seq[nsteps+1].ndata.bc_mask
-    return _masked_mse(model(g_last), x_seq[nsteps+1].ndata.dynamic, bc_mask), loss_1step
+    return _masked_mse(model(g_last), x_seq[nsteps+1].ndata.dynamic, bc_mask), loss_1step, bc_adj, bc_grad
 end
 
 function compute_loss(strategy::ScheduledRollout, model, batch, device)
-    x_seq      = batch
-    loss_1step = Flux.ignore_derivatives(() -> Flux.mse(model(x_seq[1]), x_seq[2].ndata.dynamic))
+    x_seq    = batch
+    bc_mask1 = x_seq[2].ndata.bc_mask
+    loss_1step, bc_adj, bc_grad = Flux.ignore_derivatives() do
+        pred0 = model(x_seq[1])
+        tgt0  = x_seq[2].ndata.dynamic
+        Flux.mse(pred0, tgt0), _bc_adjacent_mse(pred0, tgt0, bc_mask1), _bc_gradient_mse(pred0, tgt0, bc_mask1)
+    end
     nsteps     = strategy.current_nsteps
     dyn_cur    = x_seq[1].ndata.dynamic
     total_loss = 0.0f0
@@ -281,7 +349,7 @@ function compute_loss(strategy::ScheduledRollout, model, batch, device)
         total_loss += _masked_mse(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask)
         dyn_cur = Flux.ignore_derivatives(() -> _bc_override(yhat_k, x_seq[k+1].ndata.dynamic, bc_mask))
     end
-    return total_loss / nsteps, loss_1step
+    return total_loss / nsteps, loss_1step, bc_adj, bc_grad
 end
 
 Base.@kwdef mutable struct TrainSettings
@@ -311,6 +379,8 @@ function train_model!(model, dl_train, dl_valid_strategy, device, settings::Trai
     valid_loss_strategy = zeros(nepochs)
     valid_loss_1step    = zeros(nepochs)
     loss_noiseless      = zeros(nepochs)
+    val_bc_adj_loss     = zeros(nepochs)
+    val_bc_grad_loss    = zeros(nepochs)
 
     for epoch in 1:nepochs
         Flux.adjust!(opt, eta=schedule(epoch))
@@ -320,9 +390,9 @@ function train_model!(model, dl_train, dl_valid_strategy, device, settings::Trai
         n_valid        = 0
 
         for batch in dl_train
-            (batch_loss, nl_loss), back = Zygote.pullback(m -> compute_loss(train_strategy, m, batch, device), model)
+            (batch_loss, nl_loss, _, _), back = Zygote.pullback(m -> compute_loss(train_strategy, m, batch, device), model)
             if !isnan(batch_loss)
-                grads = back((one(batch_loss), nothing))[1]
+                grads = back((one(batch_loss), nothing, nothing, nothing))[1]
                 Flux.Optimise.update!(opt, model, grads)
                 loss           += batch_loss
                 noiseless_loss += nl_loss
@@ -332,31 +402,40 @@ function train_model!(model, dl_train, dl_valid_strategy, device, settings::Trai
 
         val_strat   = 0.0f0
         val_1step   = 0.0f0
+        bc_adj      = 0.0f0
+        bc_grad     = 0.0f0
         n_valid_val = 0
         for batch in dl_valid_strategy
-            s_l, o_l = compute_loss(train_strategy, model, batch, device)
+            s_l, o_l, a_l, g_l = compute_loss(train_strategy, model, batch, device)
             if !isnan(s_l)
                 val_strat   += s_l
                 val_1step   += o_l
+                bc_adj      += a_l
+                bc_grad     += g_l
                 n_valid_val += 1
             end
         end
         val_strat /= max(1, n_valid_val)
         val_1step /= max(1, n_valid_val)
+        bc_adj    /= max(1, n_valid_val)
+        bc_grad   /= max(1, n_valid_val)
 
         loss           /= max(1, n_valid)
         noiseless_loss /= max(1, n_valid)
         next!(pr;
             showvalues=[(:epoch, epoch), (:train_loss, loss), (:val_strategy, val_strat),
-                        (:val_1step, val_1step), (:noiseless, noiseless_loss)]
+                        (:val_1step, val_1step), (:noiseless, noiseless_loss),
+                        (:val_bc_adj, bc_adj), (:val_bc_grad, bc_grad)]
         )
         train_loss[epoch]          = loss
         valid_loss_strategy[epoch] = val_strat
         valid_loss_1step[epoch]    = val_1step
         loss_noiseless[epoch]      = noiseless_loss
+        val_bc_adj_loss[epoch]     = bc_adj
+        val_bc_grad_loss[epoch]    = bc_grad
     end
 
-    return train_loss, loss_noiseless, valid_loss_strategy, valid_loss_1step
+    return train_loss, loss_noiseless, valid_loss_strategy, valid_loss_1step, val_bc_adj_loss, val_bc_grad_loss
 end
 
 function train_settings_from_toml(d::Dict)

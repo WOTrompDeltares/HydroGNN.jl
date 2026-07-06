@@ -28,11 +28,25 @@ function predict_trajectory(fn, traj_ind::Int, model, norm_strategy::NormStrateg
 
     _n(x, mu, s) = (x .- mu) ./ s
     _d(x, mu, s) = x .* s .+ mu
-    _forc(t) = has_tau ? reshape(_n(tau[:,t], mu_t, s_t), 1, nnodes) :
-                         zeros(Float32, 0, nnodes)
+    bc_node_ids = findall(node_type .== 1)
+
+    # Next-step BC rows appended to forcing: shape (n_bc_rows, nnodes), zero for non-BC nodes.
+    function _bc_next_forc(t)
+        bound_cond === nothing && return zeros(Float32, 0, nnodes)
+        next_t = min(t + 1, nsteps + 1)
+        bc_row = zeros(Float32, length(bc_dyn_indices), nnodes)
+        for (r, dyn_row) in enumerate(bc_dyn_indices)
+            mu_d, s_d = ns.mu[dyn_row], ns.sigma[dyn_row]
+            for nid in bc_node_ids
+                bc_row[r, nid] = _n(bound_cond[r, next_t], mu_d, s_d)
+            end
+        end
+        return bc_row
+    end
+    _forc(t) = has_tau ? vcat(reshape(_n(tau[:,t], mu_t, s_t), 1, nnodes), _bc_next_forc(t)) :
+                         _bc_next_forc(t)
 
     # Build BC mask and per-step normalized BC values for the override
-    bc_node_ids = findall(node_type .== 1)
     bc_mask     = _make_bc_mask(2, nnodes, bc_node_ids, bc_dyn_indices)
     has_bc      = any(bc_mask)
 

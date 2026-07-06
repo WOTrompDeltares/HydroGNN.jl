@@ -127,6 +127,8 @@ function load_data(fn, norm_strategy::NormStrategy)
                   has_tau     ? traj_group["tau"]     : nothing
             bc_dyn_indices = "bc_dyn_indices" in keys(traj_group) ?
                              Int.(traj_group["bc_dyn_indices"]) : nothing
+            bound_cond     = "bound_cond" in keys(traj_group) ?
+                             traj_group["bound_cond"] : nothing
 
             edges = traj_group["edges"]
             edges = cat(edges, reverse(edges, dims=1), dims=2)
@@ -145,8 +147,23 @@ function load_data(fn, norm_strategy::NormStrategy)
             bc_node_ids = findall(node_type .== 1)
             bc_mask     = _make_bc_mask(2, nnodes, bc_node_ids, bc_dyn_indices)
 
-            _forc(t) = tau !== nothing ? reshape(_norm(tau[:,t], mu_t, s_t), 1, nnodes) :
-                                        zeros(Float32, 0, nnodes)
+            # Next-step BC rows: shape (n_bc_rows, nnodes), zero for non-BC nodes.
+            # Appended to forcing so the model sees where the boundary is heading.
+            function _bc_next_forc(t)
+                bound_cond === nothing && return zeros(Float32, 0, nnodes)
+                next_t = min(t + 1, size(bound_cond, 2))
+                bc_row = zeros(Float32, length(bc_dyn_indices), nnodes)
+                for (r, dyn_row) in enumerate(bc_dyn_indices)
+                    mu_d, s_d = traj_stats.mu[dyn_row], traj_stats.sigma[dyn_row]
+                    for nid in bc_node_ids
+                        bc_row[r, nid] = (bound_cond[r, next_t] - mu_d) / s_d
+                    end
+                end
+                return bc_row
+            end
+            _forc(t) = tau !== nothing ?
+                vcat(reshape(_norm(tau[:,t], mu_t, s_t), 1, nnodes), _bc_next_forc(t)) :
+                _bc_next_forc(t)
 
             for ii in 1:(size(velocity,2)-1)
                 data_static = hcat(bathymetry, mesh_pos, node_onehot')
@@ -185,6 +202,8 @@ function load_data_multistep(fn, norm_strategy::NormStrategy, nsteps::Int)
                   has_tau     ? traj_group["tau"]     : nothing
             bc_dyn_indices = "bc_dyn_indices" in keys(traj_group) ?
                              Int.(traj_group["bc_dyn_indices"]) : nothing
+            bound_cond     = "bound_cond" in keys(traj_group) ?
+                             traj_group["bound_cond"] : nothing
 
             edges = traj_group["edges"]
             edges = cat(edges, reverse(edges, dims=1), dims=2)
@@ -204,8 +223,23 @@ function load_data_multistep(fn, norm_strategy::NormStrategy, nsteps::Int)
             bc_node_ids = findall(node_type .== 1)
             bc_mask     = _make_bc_mask(2, nnodes, bc_node_ids, bc_dyn_indices)
 
-            _forc(t) = tau !== nothing ? reshape(_norm(tau[:,t], mu_t, s_t), 1, nnodes) :
-                                        zeros(Float32, 0, nnodes)
+            # Next-step BC rows: shape (n_bc_rows, nnodes), zero for non-BC nodes.
+            # Appended to forcing so the model sees where the boundary is heading.
+            function _bc_next_forc(t)
+                bound_cond === nothing && return zeros(Float32, 0, nnodes)
+                next_t = min(t + 1, size(bound_cond, 2))
+                bc_row = zeros(Float32, length(bc_dyn_indices), nnodes)
+                for (r, dyn_row) in enumerate(bc_dyn_indices)
+                    mu_d, s_d = traj_stats.mu[dyn_row], traj_stats.sigma[dyn_row]
+                    for nid in bc_node_ids
+                        bc_row[r, nid] = (bound_cond[r, next_t] - mu_d) / s_d
+                    end
+                end
+                return bc_row
+            end
+            _forc(t) = tau !== nothing ?
+                vcat(reshape(_norm(tau[:,t], mu_t, s_t), 1, nnodes), _bc_next_forc(t)) :
+                _bc_next_forc(t)
 
             nT = size(velocity, 2)
             for ii in 1:(nT - nsteps)
