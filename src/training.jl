@@ -163,12 +163,12 @@ end
 
 # Returns (strategy_loss, loss_1step, bc_adj_loss, bc_grad_loss).
 # Gradients flow only through strategy_loss; all diagnostics are wrapped in ignore_derivatives.
-function compute_loss(strategy::SingleStepNoise, model, batch, device)
+function compute_loss(strategy::SingleStepNoise, model, batch, device; bc_diag::Union{BCDiagIndices,Nothing}=nothing)
     x, y    = batch
-    bc_mask = x.ndata.bc_mask
+    _bc     = bc_diag !== nothing ? bc_diag : BCDiagIndices(x.ndata.bc_mask)
     loss_1step, bc_adj, bc_grad = Flux.ignore_derivatives() do
         pred0 = model(x)
-        Flux.mse(pred0, y.x), _bc_adjacent_mse(pred0, y.x, bc_mask), _bc_gradient_mse(pred0, y.x, bc_mask)
+        Flux.mse(pred0, y.x), _bc_adjacent_mse(pred0, y.x, _bc), _bc_gradient_mse(pred0, y.x, _bc)
     end
     if strategy.scale > 0
         x = Flux.ignore_derivatives() do
@@ -179,44 +179,58 @@ function compute_loss(strategy::SingleStepNoise, model, batch, device)
     return Flux.mse(model(x), y.x), loss_1step, bc_adj, bc_grad
 end
 
-function compute_loss(::NoNoise, model, batch, device)
+function compute_loss(::NoNoise, model, batch, device; bc_diag::Union{BCDiagIndices,Nothing}=nothing)
     x, y    = batch
-    bc_mask = x.ndata.bc_mask
+    _bc     = bc_diag !== nothing ? bc_diag : BCDiagIndices(x.ndata.bc_mask)
     loss    = Flux.mse(model(x), y.x)
     bc_adj, bc_grad = Flux.ignore_derivatives() do
         pred = model(x)
-        _bc_adjacent_mse(pred, y.x, bc_mask), _bc_gradient_mse(pred, y.x, bc_mask)
+        _bc_adjacent_mse(pred, y.x, _bc), _bc_gradient_mse(pred, y.x, _bc)
     end
     return loss, Flux.ignore_derivatives(() -> loss), bc_adj, bc_grad
 end
 
-# MSE at cells immediately adjacent to each BC node (first interior neighbours).
-# Returns 0 when bc_mask is all-false (no-op for non-BC datasets).
-function _bc_adjacent_mse(yhat, target, bc_mask)
-    any(bc_mask) || return 0.0f0
-    nnodes   = size(bc_mask, 2)
-    bc_cols  = unique([ci[2] for ci in findall(bc_mask)])
-    adj_cols = Int[]
-    for c in bc_cols
-        c > 1      && push!(adj_cols, c - 1)
-        c < nnodes && push!(adj_cols, c + 1)
+# Precomputed BC diagnostic indices — built once from bc_mask, reused every batch.
+# Avoids repeated Array(bc_mask) + findall on GPU arrays.
+struct BCDiagIndices
+    has_bc::Bool
+    adj_cols::Vector{Int}  # interior columns adjacent to BC nodes
+    bc_cols::Vector{Int}   # BC node columns (for gradient)
+    nnodes::Int
+end
+
+function BCDiagIndices(bc_mask::AbstractMatrix{Bool})
+    if !any(bc_mask)
+        return BCDiagIndices(false, Int[], Int[], size(bc_mask, 2))
     end
-    adj_cols = setdiff(unique(adj_cols), bc_cols)
-    isempty(adj_cols) && return 0.0f0
-    diff = yhat[:, adj_cols] .- target[:, adj_cols]
+    nnodes   = size(bc_mask, 2)
+    mask_cpu = bc_mask isa Array ? bc_mask : Array(bc_mask)
+    bc_cols  = sort(unique([ci[2] for ci in findall(mask_cpu)]))
+    adj_set  = Set{Int}()
+    for c in bc_cols
+        c > 1      && push!(adj_set, c - 1)
+        c < nnodes && push!(adj_set, c + 1)
+    end
+    adj_cols = sort(collect(setdiff(adj_set, Set(bc_cols))))
+    return BCDiagIndices(true, adj_cols, bc_cols, nnodes)
+end
+
+# MSE at cells immediately adjacent to each BC node (first interior neighbours).
+# Returns 0 when there are no BC nodes.
+function _bc_adjacent_mse(yhat, target, idx::BCDiagIndices)
+    (idx.has_bc && !isempty(idx.adj_cols)) || return 0.0f0
+    diff = yhat[:, idx.adj_cols] .- target[:, idx.adj_cols]
     return mean(diff .^ 2)
 end
 
 # MSE of the spatial gradient (one-sided finite difference) at each BC node vs ground truth.
-# Returns 0 when bc_mask is all-false.
-function _bc_gradient_mse(yhat, target, bc_mask)
-    any(bc_mask) || return 0.0f0
-    nnodes  = size(bc_mask, 2)
-    bc_cols = unique([ci[2] for ci in findall(bc_mask)])
-    total   = 0.0f0
-    n       = 0
-    for c in bc_cols
-        if c < nnodes
+# Returns 0 when there are no BC nodes.
+function _bc_gradient_mse(yhat, target, idx::BCDiagIndices)
+    idx.has_bc || return 0.0f0
+    total = 0.0f0
+    n     = 0
+    for c in idx.bc_cols
+        if c < idx.nnodes
             grad_pred = yhat[:, c+1]   .- yhat[:, c]
             grad_tgt  = target[:, c+1] .- target[:, c]
         else
@@ -228,6 +242,12 @@ function _bc_gradient_mse(yhat, target, bc_mask)
     end
     return total / n
 end
+
+# Fallback: build BCDiagIndices on the fly from a raw mask (used in tests / backward compat).
+_bc_adjacent_mse(yhat, target, bc_mask::AbstractMatrix{Bool}) =
+    _bc_adjacent_mse(yhat, target, BCDiagIndices(bc_mask))
+_bc_gradient_mse(yhat, target, bc_mask::AbstractMatrix{Bool}) =
+    _bc_gradient_mse(yhat, target, BCDiagIndices(bc_mask))
 
 # Override predicted dynamic state at BC-prescribed positions with ground-truth values.
 # bc_mask is (ndyn × nnodes) Bool — all-false for datasets without BCs (no-op).
@@ -246,13 +266,13 @@ function _masked_mse(yhat, target, bc_mask)
     return mean(diff .^ 2)
 end
 
-function compute_loss(strategy::MultiStepRollout, model, batch, device)
+function compute_loss(strategy::MultiStepRollout, model, batch, device; bc_diag::Union{BCDiagIndices,Nothing}=nothing)
     x_seq    = batch
-    bc_mask1 = x_seq[2].ndata.bc_mask
+    _bc      = bc_diag !== nothing ? bc_diag : BCDiagIndices(x_seq[2].ndata.bc_mask)
     loss_1step, bc_adj, bc_grad = Flux.ignore_derivatives() do
         pred0 = model(x_seq[1])
         tgt0  = x_seq[2].ndata.dynamic
-        Flux.mse(pred0, tgt0), _bc_adjacent_mse(pred0, tgt0, bc_mask1), _bc_gradient_mse(pred0, tgt0, bc_mask1)
+        Flux.mse(pred0, tgt0), _bc_adjacent_mse(pred0, tgt0, _bc), _bc_gradient_mse(pred0, tgt0, _bc)
     end
     dyn_cur    = x_seq[1].ndata.dynamic
     total_loss = 0.0f0
@@ -271,13 +291,13 @@ function compute_loss(strategy::MultiStepRollout, model, batch, device)
     return total_loss / strategy.nsteps, loss_1step, bc_adj, bc_grad
 end
 
-function compute_loss(strategy::PushforwardRollout, model, batch, device)
+function compute_loss(strategy::PushforwardRollout, model, batch, device; bc_diag::Union{BCDiagIndices,Nothing}=nothing)
     x_seq    = batch
-    bc_mask1 = x_seq[2].ndata.bc_mask
+    _bc      = bc_diag !== nothing ? bc_diag : BCDiagIndices(x_seq[2].ndata.bc_mask)
     loss_1step, bc_adj, bc_grad = Flux.ignore_derivatives() do
         pred0 = model(x_seq[1])
         tgt0  = x_seq[2].ndata.dynamic
-        Flux.mse(pred0, tgt0), _bc_adjacent_mse(pred0, tgt0, bc_mask1), _bc_gradient_mse(pred0, tgt0, bc_mask1)
+        Flux.mse(pred0, tgt0), _bc_adjacent_mse(pred0, tgt0, _bc), _bc_gradient_mse(pred0, tgt0, _bc)
     end
     dyn_cur    = x_seq[1].ndata.dynamic
     for k in 1:(strategy.nsteps - 1)
@@ -298,13 +318,13 @@ function compute_loss(strategy::PushforwardRollout, model, batch, device)
     return _masked_mse(model(g_last), x_seq[end].ndata.dynamic, bc_mask), loss_1step, bc_adj, bc_grad
 end
 
-function compute_loss(strategy::ScheduledPushforward, model, batch, device)
+function compute_loss(strategy::ScheduledPushforward, model, batch, device; bc_diag::Union{BCDiagIndices,Nothing}=nothing)
     x_seq    = batch
-    bc_mask1 = x_seq[2].ndata.bc_mask
+    _bc      = bc_diag !== nothing ? bc_diag : BCDiagIndices(x_seq[2].ndata.bc_mask)
     loss_1step, bc_adj, bc_grad = Flux.ignore_derivatives() do
         pred0 = model(x_seq[1])
         tgt0  = x_seq[2].ndata.dynamic
-        Flux.mse(pred0, tgt0), _bc_adjacent_mse(pred0, tgt0, bc_mask1), _bc_gradient_mse(pred0, tgt0, bc_mask1)
+        Flux.mse(pred0, tgt0), _bc_adjacent_mse(pred0, tgt0, _bc), _bc_gradient_mse(pred0, tgt0, _bc)
     end
     nsteps     = strategy.current_nsteps
     dyn_cur    = x_seq[1].ndata.dynamic
@@ -326,13 +346,13 @@ function compute_loss(strategy::ScheduledPushforward, model, batch, device)
     return _masked_mse(model(g_last), x_seq[nsteps+1].ndata.dynamic, bc_mask), loss_1step, bc_adj, bc_grad
 end
 
-function compute_loss(strategy::ScheduledRollout, model, batch, device)
+function compute_loss(strategy::ScheduledRollout, model, batch, device; bc_diag::Union{BCDiagIndices,Nothing}=nothing)
     x_seq    = batch
-    bc_mask1 = x_seq[2].ndata.bc_mask
+    _bc      = bc_diag !== nothing ? bc_diag : BCDiagIndices(x_seq[2].ndata.bc_mask)
     loss_1step, bc_adj, bc_grad = Flux.ignore_derivatives() do
         pred0 = model(x_seq[1])
         tgt0  = x_seq[2].ndata.dynamic
-        Flux.mse(pred0, tgt0), _bc_adjacent_mse(pred0, tgt0, bc_mask1), _bc_gradient_mse(pred0, tgt0, bc_mask1)
+        Flux.mse(pred0, tgt0), _bc_adjacent_mse(pred0, tgt0, _bc), _bc_gradient_mse(pred0, tgt0, _bc)
     end
     nsteps     = strategy.current_nsteps
     dyn_cur    = x_seq[1].ndata.dynamic
@@ -375,6 +395,13 @@ function train_model!(model, dl_train, dl_valid_strategy, device, settings::Trai
     schedule = Step(start=lr, decay=lr_decay, step_sizes=lr_step)
     pr       = Progress(nepochs, desc="Training Progress", showspeed=true)
 
+    # Precompute BC diagnostic indices once from the first training batch.
+    # bc_mask is the same for every batch from the same dataset, so this avoids
+    # repeated Array(bc_mask) + findall on GPU arrays every step.
+    _bc_mask_from_batch(b::Tuple)  = b[1].ndata.bc_mask
+    _bc_mask_from_batch(b::Vector) = b[2].ndata.bc_mask
+    bc_diag = BCDiagIndices(Array(_bc_mask_from_batch(first(dl_train))))
+
     train_loss          = zeros(nepochs)
     valid_loss_strategy = zeros(nepochs)
     valid_loss_1step    = zeros(nepochs)
@@ -390,7 +417,7 @@ function train_model!(model, dl_train, dl_valid_strategy, device, settings::Trai
         n_valid        = 0
 
         for batch in dl_train
-            (batch_loss, nl_loss, _, _), back = Zygote.pullback(m -> compute_loss(train_strategy, m, batch, device), model)
+            (batch_loss, nl_loss, _, _), back = Zygote.pullback(m -> compute_loss(train_strategy, m, batch, device; bc_diag=bc_diag), model)
             if !isnan(batch_loss)
                 grads = back((one(batch_loss), nothing, nothing, nothing))[1]
                 Flux.Optimise.update!(opt, model, grads)
@@ -406,7 +433,7 @@ function train_model!(model, dl_train, dl_valid_strategy, device, settings::Trai
         bc_grad     = 0.0f0
         n_valid_val = 0
         for batch in dl_valid_strategy
-            s_l, o_l, a_l, g_l = compute_loss(train_strategy, model, batch, device)
+            s_l, o_l, a_l, g_l = compute_loss(train_strategy, model, batch, device; bc_diag=bc_diag)
             if !isnan(s_l)
                 val_strat   += s_l
                 val_1step   += o_l
