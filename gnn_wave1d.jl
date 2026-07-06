@@ -78,7 +78,7 @@ model             = model |> device
 dl_train          = dl_train |> device
 dl_valid_strategy = dl_valid_strategy |> device
 
-train_loss, loss_noiseless, valid_loss_strategy, valid_loss_1step = train_model!(model, dl_train, dl_valid_strategy, device, settings, norm_strategy, train_strategy)
+train_loss, loss_noiseless, valid_loss_strategy, valid_loss_1step, val_bc_adj_loss, val_bc_grad_loss = train_model!(model, dl_train, dl_valid_strategy, device, settings, norm_strategy, train_strategy)
 
 jldsave(joinpath(model_dir, "model.jld2");
     model          = model |> cpu,
@@ -95,7 +95,10 @@ save_model_settings(model_settings, joinpath(model_dir, "model_settings.toml"))
 
 # %%
 
-plot_loss(train_loss, loss_noiseless, valid_loss_strategy, joinpath(model_dir, "loss_plot.png"); val_loss_1step=valid_loss_1step)
+plot_loss(train_loss, loss_noiseless, valid_loss_strategy, joinpath(model_dir, "loss_plot.png");
+    val_loss_1step=valid_loss_1step,
+    val_bc_adj_loss=val_bc_adj_loss,
+    val_bc_grad_loss=val_bc_grad_loss)
 
 
 # %%

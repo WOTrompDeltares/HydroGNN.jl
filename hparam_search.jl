@@ -109,14 +109,16 @@ for (strategy_name, make_strategy) in strategy_candidates
     @info "  strategy: $strategy_name  nsteps_max: $NSTEPS  parameters: $nparams"
 
     t_start = time()
-    train_loss, loss_noiseless, valid_loss_strategy, valid_loss_1step = train_model!(
+    train_loss, loss_noiseless, valid_loss_strategy, valid_loss_1step, val_bc_adj_loss, val_bc_grad_loss = train_model!(
         model, dl_train, get_valid_dl(NSTEPS), device, settings, norm_strategy, train_strategy)
     elapsed = time() - t_start
 
     trial_dir = joinpath(save_dir, trial_name)
     mkpath(trial_dir)
     plot_loss(train_loss, loss_noiseless, valid_loss_strategy, joinpath(trial_dir, "loss_plot.png");
-              val_loss_1step=valid_loss_1step)
+              val_loss_1step=valid_loss_1step,
+              val_bc_adj_loss=val_bc_adj_loss,
+              val_bc_grad_loss=val_bc_grad_loss)
     open(joinpath(trial_dir, "train_settings.toml"), "w") do io
         d = Dict{String,Any}(string(f) => getfield(settings, f) for f in fieldnames(TrainSettings))
         d["norm_strategy"]  = strategy_to_dict(norm_strategy)
